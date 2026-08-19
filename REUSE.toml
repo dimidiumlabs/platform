@@ -6,6 +6,7 @@ version = 1
 [[annotations]]
 path = [
   "README.md",
+  "docs/releases.md",
 ]
 SPDX-FileCopyrightText = "2026 Nikolay Govorov"
 SPDX-License-Identifier = "CC-BY-4.0"

@@ -1,0 +1,101 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Nikolay Govorov
+# SPDX-License-Identifier: 0BSD
+#MISE description="Build signed Linux packages with nFPM"
+#MISE tools={"nfpm"="2.47.0"}
+
+set -eu
+
+usage() {
+    echo "usage: mise run package -- --version VERSION --arch ARCH --output DIR [--config FILE] deb|rpm|apk..." >&2
+    exit 2
+}
+
+config=nfpm.yaml
+version=
+arch=
+output=
+formats=
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config) config=$2; shift 2 ;;
+        --version) version=$2; shift 2 ;;
+        --arch) arch=$2; shift 2 ;;
+        --output) output=$2; shift 2 ;;
+        deb|rpm|apk) formats="$formats $1"; shift ;;
+        *) usage ;;
+    esac
+done
+
+[ -n "$version" ] && [ -n "$arch" ] && [ -n "$output" ] && [ -n "$formats" ] || usage
+[ -f "$config" ] || { echo "package: $config not found" >&2; exit 1; }
+
+case "$version" in
+    *-nightly.*.g*)
+        base=${version%%-nightly.*}
+        nightly=${version#*-nightly.}
+        sequence=${nightly%%.g*}
+        commit=${nightly#*.g}
+        echo "$base" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' &&
+            echo "$sequence" | grep -Eq '^[0-9]+$' &&
+            echo "$commit" | grep -Eq '^[0-9a-f]{7,40}$' ||
+            { echo "package: invalid version: $version" >&2; exit 1; }
+        ;;
+    *)
+        echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
+            { echo "package: invalid version: $version" >&2; exit 1; }
+        base=$version
+        sequence=
+        commit=
+        ;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+mkdir -p "$output"
+
+case " $formats " in
+    *" deb "*|*" rpm "*)
+        : "${GPG_PRIVATE_KEY:?package: GPG_PRIVATE_KEY is required}"
+        : "${GPG_PASSPHRASE:?package: GPG_PASSPHRASE is required}"
+        : "${GPG_KEY_ID:?package: GPG_KEY_ID is required}"
+        export GNUPGHOME="$work/gnupg"
+        mkdir -m 700 "$GNUPGHOME"
+        SIGNING_PRIVATE_KEY="$work/signing.asc"
+        printf '%s' "$GPG_PRIVATE_KEY" > "$SIGNING_PRIVATE_KEY"
+        chmod 600 "$SIGNING_PRIVATE_KEY"
+        gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" --import "$SIGNING_PRIVATE_KEY"
+        NFPM_PASSPHRASE=$GPG_PASSPHRASE
+        GPG_KEY_ID=$(printf '%s' "$GPG_KEY_ID" | sed 's/.*\\(.\\{16\\}\\)$/\\1/')
+        export SIGNING_PRIVATE_KEY NFPM_PASSPHRASE GPG_KEY_ID
+        ;;
+esac
+
+case " $formats " in
+    *" apk "*)
+        : "${APK_PRIVATE_KEY:?package: APK_PRIVATE_KEY is required}"
+        APK_SIGNING_KEY="$work/signing.rsa"
+        printf '%s' "$APK_PRIVATE_KEY" > "$APK_SIGNING_KEY"
+        chmod 600 "$APK_SIGNING_KEY"
+        package_name=$(sed -n 's/^name:[[:space:]]*//p' "$config" | head -n 1)
+        [ -n "$package_name" ] || { echo "package: name is missing in $config" >&2; exit 1; }
+        openssl rsa -in "$APK_SIGNING_KEY" -pubout -out "$output/$package_name.rsa.pub"
+        export APK_SIGNING_KEY
+        ;;
+esac
+
+for format in $formats; do
+    case "$format:$sequence" in
+        deb:) VERSION=$base; RELEASE=1 ;;
+        rpm:) VERSION=$base; RELEASE=1 ;;
+        apk:) VERSION=$base; RELEASE=0 ;;
+        deb:*) VERSION="$base~nightly.$sequence+$commit"; RELEASE=1 ;;
+        rpm:*) VERSION=$base; RELEASE="0.nightly.$sequence.$commit" ;;
+        apk:*) VERSION="${base}_pre${sequence}~${commit}"; RELEASE=0 ;;
+    esac
+    ARCH=$arch
+    export VERSION RELEASE ARCH
+    nfpm package --config "$config" --packager "$format" --target "$output/"
+done

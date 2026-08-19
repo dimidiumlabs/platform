@@ -14,6 +14,13 @@ mise run licenses
 
 Consuming projects pin this repository by commit SHA.
 
+## Releases
+
+Projects build binaries themselves. Shared
+[`package`](tasks/package) and [`publish`](tasks/publish) tasks sign packages
+and publish package repositories consistently. Their short CLI contract is in
+[`docs/releases.md`](docs/releases.md).
+
 ## Tool provisioning
 
 Each project declares its toolchain and standalone CLI dependencies in
