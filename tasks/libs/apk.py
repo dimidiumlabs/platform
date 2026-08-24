@@ -3,18 +3,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import hashlib
 import io
 import os
 import platform
 import shutil
-import subprocess
 import tarfile
 import urllib.request
 from pathlib import Path
 
-from _lib import TaskError, run
+from shellous import sh
+
+from .common import TaskError, capture, run
 
 TASK = "publish"
 APK_TOOLS_VERSION = "2.14.10-r0"
@@ -24,19 +26,15 @@ APK_TOOLS_SHA256 = {
 }
 
 
-def architecture(package: Path) -> str:
-    metadata = run(
-        ["tar", "-xOzf", package, ".PKGINFO"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout
+async def architecture(package: Path) -> str:
+    metadata = await capture("tar", "-xOzf", package, ".PKGINFO").stderr(sh.DEVNULL)
     for line in metadata.splitlines():
         if line.startswith("arch = "):
             return line.removeprefix("arch = ")
     raise TaskError(f"{TASK}: cannot read APK architecture: {package}")
 
 
-def apk_tool(work: Path) -> Path:
+async def apk_tool(work: Path) -> Path:
     configured = os.environ.get("APK_TOOL")
     if configured:
         tool = Path(configured)
@@ -61,33 +59,29 @@ def apk_tool(work: Path) -> Path:
         "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/"
         f"{apk_arch}/apk-tools-static-{APK_TOOLS_VERSION}.apk"
     )
-    urllib.request.urlretrieve(url, archive)
+    await asyncio.to_thread(urllib.request.urlretrieve, url, archive)
     if hashlib.sha256(archive.read_bytes()).hexdigest() != APK_TOOLS_SHA256[apk_arch]:
         raise TaskError(f"{TASK}: apk-tools checksum mismatch")
     directory = work / "apk-tools"
     directory.mkdir()
-    run(
-        ["tar", "-xzf", archive, "-C", directory, "sbin/apk.static"],
-        stderr=subprocess.DEVNULL,
+    await run("tar", "-xzf", archive, "-C", directory, "sbin/apk.static").stderr(
+        sh.DEVNULL
     )
     return directory / "sbin" / "apk.static"
 
 
-def sign_index(context, index: Path) -> None:
+async def sign_index(context, index: Path) -> None:
     name = f".SIGN.RSA256.{context.apk_signing.public_key_name}"
     signature = index.parent / name
-    run(
-        [
-            "openssl",
-            "dgst",
-            "-sha256",
-            "-sign",
-            context.apk_signing.private_key_file,
-            "-out",
-            signature,
-            index,
-        ],
-        env=context.apk_signing.environment,
+    await run.set(env=context.apk_signing.environment, inherit_env=False)(
+        "openssl",
+        "dgst",
+        "-sha256",
+        "-sign",
+        context.apk_signing.private_key_file,
+        "-out",
+        signature,
+        index,
     )
     data = signature.read_bytes()
     stream = io.BytesIO()
@@ -104,10 +98,17 @@ def sign_index(context, index: Path) -> None:
     signature.unlink()
 
 
-def publish(context) -> None:
-    tool = apk_tool(context.work)
+async def publish(context) -> None:
+    tool = await apk_tool(context.work)
     packages = context.packages["apk"]
-    architectures = sorted({architecture(package) for package in packages})
+    package_architectures = dict(
+        zip(
+            packages,
+            await asyncio.gather(*(architecture(package) for package in packages)),
+            strict=True,
+        )
+    )
+    architectures = sorted(set(package_architectures.values()))
     keys = context.work / "apk-keys"
     keys.mkdir()
     for public_key in context.apk_public_keys:
@@ -119,28 +120,25 @@ def publish(context) -> None:
         remote = context.storage.service_key("apk", context.channel, apk_arch)
         context.storage.download_prefix(remote, root, "*.apk")
         for package in packages:
-            if architecture(package) == apk_arch:
+            if package_architectures[package] == apk_arch:
                 context.add_package(package, root)
         for package in root.glob("*.apk"):
-            if run(
-                [tool, "verify", "--keys-dir", keys, package], check=False
-            ).returncode:
+            result = await run.result(tool, "verify", "--keys-dir", keys, package)
+            if result.exit_code:
                 raise TaskError(
                     f"{TASK}: APK signature verification failed: {package.name}"
                 )
         index = root / "APKINDEX.tar.gz"
-        run(
-            [
-                tool,
-                "--allow-untrusted",
-                "index",
-                "--description",
-                f"Dimidium Labs {context.service} {context.channel}",
-                "--output",
-                index,
-                *root.glob("*.apk"),
-            ]
+        await run(
+            tool,
+            "--allow-untrusted",
+            "index",
+            "--description",
+            f"Dimidium Labs {context.service} {context.channel}",
+            "--output",
+            index,
+            sorted(root.glob("*.apk")),
         )
-        sign_index(context, index)
+        await sign_index(context, index)
         context.storage.upload_payloads(root, remote, "*.apk")
         context.storage.upload(index, f"{remote}/APKINDEX.tar.gz")

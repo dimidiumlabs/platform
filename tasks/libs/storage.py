@@ -12,8 +12,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import boto3
-from _lib import TaskError, required_env
 from botocore.exceptions import ClientError
+
+from .common import TaskError, required_env
 
 
 class S3Storage:

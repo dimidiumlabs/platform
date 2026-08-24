@@ -30,17 +30,14 @@ jobs:
 
       - name: Check Python
         run: |
-          ruff check tasks/_*.py tasks/package tasks/publish tests/fakes/boto3.py
-          ruff format --check tasks/_*.py tasks/package tasks/publish tests/fakes/boto3.py
-
-      - name: Check shell
-        run: sh -n tasks/chart tasks/container tests/oci-tasks
+          ruff check tasks tests
+          ruff format --check tasks tests
 
       - name: Tests
         run: |
-          tests/oci-tasks
+          tests/oci-tasks.py
 
-          tests/package
-          tests/package-integration
+          tests/package.py
+          tests/package-integration.py
 
-          tests/publish-integration
+          tests/publish-integration.py

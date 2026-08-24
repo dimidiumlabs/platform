@@ -3,14 +3,12 @@
 
 from __future__ import annotations
 
-import subprocess
-
-from _lib import TaskError, require_command, run
+from .common import TaskError, capture, require_command, run
 
 TASK = "publish"
 
 
-def publish(context) -> None:
+async def publish(context) -> None:
     require_command("apt-ftparchive", TASK)
     require_command("dpkg-deb", TASK)
     root = context.work / "apt"
@@ -25,10 +23,7 @@ def publish(context) -> None:
 
     architectures = sorted(
         {
-            run(
-                ["dpkg-deb", "-f", package, "Architecture"],
-                stdout=subprocess.PIPE,
-            ).stdout.strip()
+            (await capture("dpkg-deb", "-f", package, "Architecture")).strip()
             for package in pool.glob("*.deb")
         }
     )
@@ -57,31 +52,28 @@ Tree "dists/{context.channel}" {{
 }};
 '''
     )
-    run(["apt-ftparchive", "generate", config])
+    await run("apt-ftparchive", "generate", config)
     release = metadata / "Release"
-    with release.open("wb") as stream:
-        run(
-            [
-                "apt-ftparchive",
-                "-o",
-                "APT::FTPArchive::Release::Origin=Dimidium Labs",
-                "-o",
-                f"APT::FTPArchive::Release::Label={context.service} {context.channel}",
-                "-o",
-                f"APT::FTPArchive::Release::Suite={context.channel}",
-                "-o",
-                f"APT::FTPArchive::Release::Codename={context.channel}",
-                "-o",
-                "APT::FTPArchive::Release::Components=main",
-                "-o",
-                f"APT::FTPArchive::Release::Architectures={architecture_list}",
-                "release",
-                f"{metadata}/",
-            ],
-            stdout=stream,
-            text=False,
-        )
-    context.gpg.sign(metadata / "Release.gpg", "--armor", "--detach-sign", release)
-    context.gpg.sign(metadata / "InRelease", "--clearsign", release)
+    await run(
+        "apt-ftparchive",
+        "-o",
+        "APT::FTPArchive::Release::Origin=Dimidium Labs",
+        "-o",
+        f"APT::FTPArchive::Release::Label={context.service} {context.channel}",
+        "-o",
+        f"APT::FTPArchive::Release::Suite={context.channel}",
+        "-o",
+        f"APT::FTPArchive::Release::Codename={context.channel}",
+        "-o",
+        "APT::FTPArchive::Release::Components=main",
+        "-o",
+        f"APT::FTPArchive::Release::Architectures={architecture_list}",
+        "release",
+        f"{metadata}/",
+    ).stdout(release)
+    await context.gpg.sign(
+        metadata / "Release.gpg", "--armor", "--detach-sign", release
+    )
+    await context.gpg.sign(metadata / "InRelease", "--clearsign", release)
     context.storage.upload_payloads(pool, pool_prefix, "*.deb")
     context.storage.replace_prefix(metadata, metadata_prefix)

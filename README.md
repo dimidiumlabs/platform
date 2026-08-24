@@ -19,14 +19,14 @@ Consuming projects pin this repository by commit SHA.
 ## Packaging
 
 Projects build and stage their own binaries and keep their nFPM configuration.
-The shared [`package`](tasks/package) task creates only the formats explicitly
+The shared [`package`](tasks/package.py) task creates only the formats explicitly
 requested by a project: nFPM packages (`deb`, `rpm`, or `apk`) and portable
 archives (`tar.gz` or `zip`). APK configurations may use
 `${PACKAGE_KEY_VERSION}` in `apk.signature.key_name`; the task renders the
 four-digit generation before invoking nFPM. DEB and RPM payloads are built by
 nFPM and then signed through `debsigs` and `rpmsign`, allowing CI to use only an
 OpenPGP signing subkey while the certification key remains offline. The shared
-[`publish`](tasks/publish) task adds
+[`publish`](tasks/publish.py) task adds
 explicitly selected package formats to signed repositories in the organization
 package bucket.
 
@@ -43,10 +43,10 @@ mise run package -- \
 
 ## OCI artifacts
 
-The shared [`container`](tasks/container) task builds one or more tagged OCI
+The shared [`container`](tasks/container.py) task builds one or more tagged OCI
 images with Docker Buildx. Registry authentication is deliberately left to the
 calling workflow, so the same build can be pushed to GHCR, Cloudflare, or
-another OCI registry. The [`chart`](tasks/chart) task strictly lints a Helm
+another OCI registry. The [`chart`](tasks/chart.py) task strictly lints a Helm
 chart, packages an immutable version, and can push it to one or more OCI
 repositories.
 
@@ -110,20 +110,22 @@ mise bootstrap
 ```
 
 Shared tasks declare task-specific tools in their `#MISE tools` metadata, so
-`mise run` installs the same pinned versions on demand. System libraries that
-cannot be installed as portable tools belong in `[bootstrap.packages]`.
+`mise run` installs the same pinned versions on demand. Python tasks declare
+their dependencies inline with PEP 723 and run through pipx's standard pip
+backend, without a project virtual environment or install step. System libraries
+that cannot be installed as portable tools belong in `[bootstrap.packages]`.
 
 ## Guardrails
 
 ### Licensing policy
 
-`tasks/licenses` runs a pinned REUSE version and verifies the repository's
+`tasks/licenses.py` runs a pinned REUSE version and verifies the repository's
 licensing metadata and canonical SPDX copyright headers. In Rust projects it
 also runs a pinned `cargo deny check`.
 
 ### Sign-off policy
 
-`tasks/signoff` verifies that:
+`tasks/signoff.py` verifies that:
 
 - authors and co-authors with an email from
   `config/signoff-approved-emails` are trusted without a trailer;

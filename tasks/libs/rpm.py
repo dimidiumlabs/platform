@@ -4,14 +4,13 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 
-from _lib import TaskError, require_command, run
+from .common import TaskError, capture, require_command, run
 
 TASK = "publish"
 
 
-def publish(context) -> None:
+async def publish(context) -> None:
     require_command("createrepo_c", TASK)
     require_command("rpmkeys", TASK)
     root = context.work / "rpm"
@@ -23,21 +22,22 @@ def publish(context) -> None:
 
     rpm_database = context.work / "rpmdb"
     rpm_database.mkdir()
-    run(["rpmkeys", "--dbpath", rpm_database, "--import", context.gpg_public_key])
+    await run("rpmkeys", "--dbpath", rpm_database, "--import", context.gpg_public_key)
     for package in root.glob("*.rpm"):
-        result = run(
-            ["rpmkeys", "--dbpath", rpm_database, "--checksig", package],
-            stdout=subprocess.PIPE,
-        ).stdout
+        result = await capture(
+            "rpmkeys", "--dbpath", rpm_database, "--checksig", package
+        )
         if "signatures OK" not in result:
             raise TaskError(
                 f"{TASK}: RPM is not signed by a trusted key: {package.name}"
             )
 
     shutil.rmtree(root / "repodata", ignore_errors=True)
-    run(["createrepo_c", root])
+    await run("createrepo_c", root)
     repomd = root / "repodata" / "repomd.xml"
-    context.gpg.sign(repomd.with_suffix(".xml.asc"), "--armor", "--detach-sign", repomd)
+    await context.gpg.sign(
+        repomd.with_suffix(".xml.asc"), "--armor", "--detach-sign", repomd
+    )
     definition = root / f"{context.service}-{context.channel}.repo"
     definition.write_text(
         f"""[{context.service}-{context.channel}]

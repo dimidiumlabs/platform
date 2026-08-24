@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
-import subprocess
+import sys
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+
+from shellous import ResultError, sh
+
+run = sh.stdout(sh.INHERIT).stderr(sh.INHERIT)
+capture = sh.stderr(sh.INHERIT)
 
 
 class TaskError(RuntimeError):
@@ -28,16 +35,25 @@ def required_env(name: str, task: str, purpose: str = "") -> str:
     raise TaskError(f"{task}: {name} is required{suffix}")
 
 
-def run(args, **options) -> subprocess.CompletedProcess[str]:
-    check = options.pop("check", True)
-    options.setdefault("text", True)
-    if "input_text" in options:
-        options["input"] = options.pop("input_text")
-    return subprocess.run([str(arg) for arg in args], check=check, **options)
+def task_main(
+    task: str,
+    main: Callable[[Sequence[str]], Awaitable[None]],
+    args: Sequence[str],
+) -> None:
+    try:
+        asyncio.run(main(args))
+    except TaskError as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1) from None
+    except ResultError as error:
+        exit_code = error.result.exit_code
+        print(f"{task}: command failed with exit code {exit_code}", file=sys.stderr)
+        raise SystemExit(exit_code) from None
 
 
 class GPGSigning:
     def __init__(self, task: str, work: Path):
+        self.task = task
         require_command("gpg", task)
         private_key = required_env("GPG_PRIVATE_KEY", task)
         self.passphrase = required_env("GPG_PASSPHRASE", task)
@@ -53,8 +69,14 @@ class GPGSigning:
         self.environment.pop("GPG_PRIVATE_KEY", None)
         self.environment.pop("GPG_PASSPHRASE", None)
         self.environment.pop("APK_PRIVATE_KEY", None)
-        run(
-            [
+
+    @classmethod
+    async def create(cls, task: str, work: Path) -> GPGSigning:
+        signing = cls(task, work)
+        command = run.set(env=signing.environment, inherit_env=False)
+        await (
+            f"{signing.passphrase}\n"
+            | command(
                 "gpg",
                 "--batch",
                 "--yes",
@@ -63,39 +85,44 @@ class GPGSigning:
                 "--passphrase-fd",
                 "0",
                 "--import",
-                self.private_key_file,
-            ],
-            env=self.environment,
-            input_text=f"{self.passphrase}\n",
+                signing.private_key_file,
+            )
         )
+        return signing
 
     def package_environment(self) -> dict[str, str]:
         environment = dict(self.environment)
         environment["GPG_KEY_ID"] = self.short_key_id
         return environment
 
-    def prime_agent(self) -> None:
+    async def prime_agent(self) -> None:
         signature = self.private_key_file.with_suffix(".sig")
-        self.sign(signature, "--detach-sign", self.private_key_file)
+        await self.sign(signature, "--detach-sign", self.private_key_file)
         signature.unlink()
 
-    def export_public_key(self, output: Path) -> None:
-        with output.open("wb") as stream:
-            run(
-                ["gpg", "--batch", "--yes", "--armor", "--export", self.key_id],
-                env=self.environment,
-                stdout=stream,
-                text=False,
-            )
+    async def export_public_key(self, output: Path) -> None:
+        command = run.set(env=self.environment, inherit_env=False)
+        await command(
+            "gpg",
+            "--batch",
+            "--yes",
+            "--armor",
+            "--export",
+            self.key_id,
+        ).stdout(output)
 
-    def verify_public_bundle(self, bundle: Path) -> None:
+    async def verify_public_bundle(self, bundle: Path) -> None:
+        command = capture.set(env=self.environment, inherit_env=False)
+        output = await command(
+            "gpg",
+            "--batch",
+            "--with-colons",
+            "--show-keys",
+            bundle,
+        )
         fingerprints = {
             line.split(":")[9]
-            for line in run(
-                ["gpg", "--batch", "--with-colons", "--show-keys", bundle],
-                env=self.environment,
-                stdout=subprocess.PIPE,
-            ).stdout.splitlines()
+            for line in output.splitlines()
             if line.startswith("fpr:")
         }
         if self.key_id not in fingerprints:
@@ -103,9 +130,11 @@ class GPGSigning:
                 f"{self.task}: packages.gpg does not contain signing key {self.key_id}"
             )
 
-    def sign(self, output: Path, *arguments: str | Path) -> None:
-        run(
-            [
+    async def sign(self, output: Path, *arguments: str | Path) -> None:
+        command = run.set(env=self.environment, inherit_env=False)
+        await (
+            f"{self.passphrase}\n"
+            | command(
                 "gpg",
                 f"--default-key={self.key_id}",
                 "--batch",
@@ -116,10 +145,8 @@ class GPGSigning:
                 "0",
                 "-o",
                 output,
-                *arguments,
-            ],
-            env=self.environment,
-            input_text=f"{self.passphrase}\n",
+                arguments,
+            )
         )
 
 
@@ -138,16 +165,14 @@ class APKSigning:
         self.environment.pop("GPG_PASSPHRASE", None)
         self.environment["APK_SIGNING_KEY"] = str(self.private_key_file)
 
-    def export_public_key(self, output: Path) -> None:
-        run(
-            [
-                "openssl",
-                "rsa",
-                "-in",
-                self.private_key_file,
-                "-pubout",
-                "-out",
-                output,
-            ],
-            env=self.environment,
+    async def export_public_key(self, output: Path) -> None:
+        command = run.set(env=self.environment, inherit_env=False)
+        await command(
+            "openssl",
+            "rsa",
+            "-in",
+            self.private_key_file,
+            "-pubout",
+            "-out",
+            output,
         )

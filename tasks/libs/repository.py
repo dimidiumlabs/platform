@@ -7,8 +7,8 @@ import re
 import shutil
 from pathlib import Path
 
-from _lib import APKSigning, GPGSigning, TaskError, required_env
-from _storage import S3Storage
+from .common import APKSigning, GPGSigning, TaskError, required_env
+from .storage import S3Storage
 
 TASK = "publish"
 KEY_VERSION = re.compile(r"^[0-9]{4}$")
@@ -57,23 +57,23 @@ class Repository:
         if not destination.exists():
             shutil.copy2(source, destination)
 
-    def setup_openpgp(self) -> None:
-        self.gpg = GPGSigning(TASK, self.work)
+    async def setup_openpgp(self) -> None:
+        self.gpg = await GPGSigning.create(TASK, self.work)
         current = self.work / "current-packages.gpg"
-        self.gpg.export_public_key(current)
+        await self.gpg.export_public_key(current)
         self.check_public_key(current, f"keys/packages.{self.key_version}.gpg")
 
         bundle = self.work / "packages.gpg"
         if not self.storage.download("packages.gpg", bundle):
             raise TaskError(f"{TASK}: organization key packages.gpg is not provisioned")
-        self.gpg.verify_public_bundle(bundle)
+        await self.gpg.verify_public_bundle(bundle)
         self.gpg_public_key = bundle
 
-    def setup_rsa(self) -> None:
+    async def setup_rsa(self) -> None:
         key_name = f"packages.{self.key_version}"
         self.apk_signing = APKSigning(TASK, self.work, key_name)
         current = self.work / self.apk_signing.public_key_name
-        self.apk_signing.export_public_key(current)
+        await self.apk_signing.export_public_key(current)
         self.check_public_key(
             current,
             f"keys/{self.apk_signing.public_key_name}",
@@ -93,19 +93,19 @@ class Repository:
                 f"{TASK}: current RSA public key is absent from key archive"
             )
 
-    def setup_signing(self) -> None:
+    async def setup_signing(self) -> None:
         if {"deb", "rpm"} & set(self.formats):
-            self.setup_openpgp()
+            await self.setup_openpgp()
         if "apk" in self.formats:
-            self.setup_rsa()
+            await self.setup_rsa()
 
-    def publish(self) -> None:
-        from _apk import publish as publish_apk
-        from _apt import publish as publish_apt
-        from _rpm import publish as publish_rpm
+    async def publish(self) -> None:
+        from .apk import publish as publish_apk
+        from .apt import publish as publish_apt
+        from .rpm import publish as publish_rpm
 
         publishers = {"deb": publish_apt, "rpm": publish_rpm, "apk": publish_apk}
         with self.storage.lock(self.channel):
-            self.setup_signing()
+            await self.setup_signing()
             for package_format in self.formats:
-                publishers[package_format](self)
+                await publishers[package_format](self)

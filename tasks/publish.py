@@ -1,49 +1,49 @@
-#!/usr/bin/env -S uv run --script --python 3.14.7
+#!/usr/bin/env -S pipx run --backend pip
 # SPDX-FileCopyrightText: 2026 Nikolay Govorov
 # SPDX-License-Identifier: 0BSD
 # fmt: off
 #MISE description="Publish signed package repositories to shared S3 storage"
-#MISE tools={"uv"="0.12.5"}
+#MISE tools={"pipx"="1.16.7","python"="3.14.7"}
 # fmt: on
 # /// script
-# requires-python = ">=3.14"
-# dependencies = ["boto3==1.43.75"]
+# requires-python = ">=3.11"
+# dependencies = ["boto3==1.43.75", "shellous==0.42.0"]
 # ///
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
-import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-from _lib import TaskError
-from _repository import Repository
+from libs.common import TaskError, task_main
+
+if test_path := os.environ.get("PUBLISH_TEST_PYTHONPATH"):
+    sys.path.insert(0, test_path)
+
+from libs.repository import Repository
 
 TASK = "publish"
 FORMATS = {"deb", "rpm", "apk"}
 SAFE_SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
 
-def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(
+async def main(args: Sequence[str]) -> None:
+    command = argparse.ArgumentParser(
         prog="mise run publish --",
-        usage=("%(prog)s --service NAME --channel CHANNEL --input DIR deb|rpm|apk..."),
+        usage="%(prog)s --service NAME --channel CHANNEL --input DIR deb|rpm|apk...",
     )
-    result.add_argument("--service", required=True)
-    result.add_argument("--channel", required=True)
-    result.add_argument("--input", required=True, type=Path)
-    result.add_argument("formats", nargs="+", choices=sorted(FORMATS))
-    return result
-
-
-def main() -> None:
-    command = parser()
-    arguments = command.parse_args()
+    command.add_argument("--service", required=True)
+    command.add_argument("--channel", required=True)
+    command.add_argument("--input", required=True, type=Path)
+    command.add_argument("formats", nargs="+", choices=sorted(FORMATS))
+    arguments = command.parse_args(args)
     for label, value in (
         ("service name", arguments.service),
         ("channel", arguments.channel),
@@ -53,7 +53,7 @@ def main() -> None:
     if not arguments.input.is_dir():
         raise TaskError(f"{TASK}: {arguments.input} not found")
     with tempfile.TemporaryDirectory(prefix="publish-") as directory:
-        Repository(
+        await Repository(
             arguments.service,
             arguments.channel,
             arguments.input.resolve(),
@@ -63,14 +63,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except TaskError as error:
-        print(error, file=sys.stderr)
-        raise SystemExit(1) from None
-    except subprocess.CalledProcessError as error:
-        print(
-            f"{TASK}: command failed with exit code {error.returncode}",
-            file=sys.stderr,
-        )
-        raise SystemExit(error.returncode) from None
+    task_main(TASK, main, sys.argv[1:])
