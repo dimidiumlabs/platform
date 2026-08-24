@@ -1,9 +1,11 @@
-# Dimidium Labs infrastructure
+# Dimidium Labs platform
 
-This repository contains executable development and release tasks shared by
-Dimidium Labs projects. GitHub Actions is only a runner for these tasks.
+This repository contains shared building blocks for Dimidium Labs projects:
+reusable development and release tasks, common Go and npm libraries, and shared
+documentation.
 
-Projects include `tasks/` with
+The current executable tasks live in `tasks/`. GitHub Actions is only a runner
+for these tasks. Projects include `tasks/` with
 [mise remote Git includes](https://mise.jdx.dev/tasks/task-configuration.html#remote-git-includes).
 By default, tasks are fetched directly from this public repository over HTTPS:
 
@@ -174,5 +176,5 @@ Remember, AI agents should make software better, not worse.
 
 ## Licensing
 
-Executable tasks and their configuration are licensed under 0BSD.
+Unless noted otherwise, software and configuration are licensed under 0BSD.
 Documentation is licensed under CC-BY-4.0.

@@ -1,4 +1,4 @@
-# Dimidium Labs Infrastructure Individual Contributor License Agreement
+# Dimidium Labs Platform Individual Contributor License Agreement
 
 Version 1.0
 
@@ -6,8 +6,8 @@ Version 1.0
 > Agreement Version 1.0 licensed under a
 > [Creative Commons Attribution 3.0 Unported License](https://creativecommons.org/licenses/by/3.0/).
 
-Thank you for your interest in contributing to Dimidium Labs Infrastructure
-(the "Project"). In this Agreement, "We" and "Us" mean Nikolay Govorov.
+Thank you for your interest in contributing to Dimidium Labs Platform (the
+"Project"). In this Agreement, "We" and "Us" mean Nikolay Govorov.
 
 This contributor agreement ("Agreement") documents the rights granted by
 contributors to Us. To make this document effective, You must personally add
