@@ -123,6 +123,22 @@ that cannot be installed as portable tools belong in `[bootstrap.packages]`.
 licensing metadata and canonical SPDX copyright headers. In Rust projects it
 also runs a pinned `cargo deny check`.
 
+The separate `licenses-json` task uses cargo-about to generate a deterministic,
+embeddable JSON bundle for a Rust binary. It accepts every license declared by
+the dependency graph because policy enforcement remains the responsibility of
+`cargo deny`. Repeat `--target` to produce one bundle for all supported targets:
+
+```console
+mise run licenses-json -- \
+  --manifest-path crates/server/Cargo.toml \
+  --output crates/server/licenses.json \
+  --target x86_64-unknown-linux-gnu \
+  --target aarch64-unknown-linux-gnu
+```
+
+Use `--check` with the same arguments in CI to verify that a committed bundle is
+up to date, or `--offline` when all dependency sources are already cached.
+
 ### Sign-off policy
 
 `tasks/signoff.py` verifies that:
