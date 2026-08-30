@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pipx run --backend pip
 # SPDX-FileCopyrightText: 2026 Nikolay Govorov
-# SPDX-License-Identifier: 0BSD
+# SPDX-License-Identifier: Apache-2.0
 # fmt: off
 #MISE description="Generate embeddable Rust dependency license JSON"
 #MISE tools={"pipx"="1.16.7","python"="3.14.7","cargo:cargo-about"="0.8.4"}

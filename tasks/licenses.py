@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pipx run --backend pip
 # SPDX-FileCopyrightText: 2026 Nikolay Govorov
-# SPDX-License-Identifier: 0BSD
+# SPDX-License-Identifier: Apache-2.0
 # fmt: off
 #MISE description="Verify repository licensing metadata"
 #MISE tools={"pipx"="1.16.7","python"="3.14.7","pipx:reuse"="6.2.0","aqua:EmbarkStudios/cargo-deny"="0.19.0"}

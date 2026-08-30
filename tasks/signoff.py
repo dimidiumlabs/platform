@@ -1,6 +1,6 @@
 #!/usr/bin/env -S pipx run --backend pip
 # SPDX-FileCopyrightText: 2026 Nikolay Govorov
-# SPDX-License-Identifier: 0BSD
+# SPDX-License-Identifier: Apache-2.0
 # fmt: off
 #MISE description="Verify contributor identities and CLA acceptance trailers"
 #MISE tools={"pipx"="1.16.7","python"="3.14.7"}

@@ -194,5 +194,5 @@ Remember, AI agents should make software better, not worse.
 
 ## Licensing
 
-Unless noted otherwise, software and configuration are licensed under 0BSD.
+Unless noted otherwise, software and configuration are licensed under Apache-2.0.
 Documentation is licensed under CC-BY-4.0.
