@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Nikolay Govorov
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "dimidiumlabs-ui-build"
+description = "Build-script support for Dimidium Labs service stylesheets and scripts"
+version.workspace = true
+
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lightningcss = { version = "=1.0.0-alpha.72", default-features = false }
+oxc = { version = "=0.147.0", default-features = false, features = ["codegen", "mangler", "minifier", "semantic", "transformer"] }
+
+[dev-dependencies]
+tempfile = "3.24.0"

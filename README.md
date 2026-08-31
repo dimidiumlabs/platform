@@ -4,6 +4,18 @@ This repository contains shared building blocks for Dimidium Labs projects:
 reusable development and release tasks, common Go and npm libraries, and shared
 documentation.
 
+## UI build tool
+
+`crates/ui-build` provides the build-only `dimidiumlabs-ui-build` library. A service
+can call `dimidiumlabs_ui_build::build()?` from its thin `build.rs` to compile its
+colocated CSS Modules, global styles, and `src/**/*.js` or `src/**/*.ts` classic component scripts.
+Scripts are sorted by manifest-relative path, each is isolated in a strict IIFE, and Oxc parses,
+transpiles erasable TypeScript, compresses, and identifier-mangles them without property mangling
+or source maps. This is transpilation, not type-checking: ESM imports/exports, JSX/TSX, declaration
+bundles, and bundling are unsupported. The generated `stylesheet.css`, `css_modules.rs`, and
+`script.js` are build outputs; Lightning CSS and Oxc (including its transformer) remain build-only
+dependencies and never enter a service runtime dependency graph.
+
 The current executable tasks live in `tasks/`. GitHub Actions is only a runner
 for these tasks. Projects include `tasks/` with
 [mise remote Git includes](https://mise.jdx.dev/tasks/task-configuration.html#remote-git-includes).

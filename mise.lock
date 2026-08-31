@@ -79,3 +79,11 @@ checksum = "sha256:f10c709755b393fd9821506b21070bcca969b9966504edd1e490efd08e366
 url = "https://github.com/astral-sh/ruff/releases/download/0.16.3/ruff-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/astral-sh/ruff/releases/assets/513140346"
 provenance = "github-attestations"
+
+[[tools.rust]]
+version = "1.97.1"
+backend = "core:rust"
+
+[tools.rust.options]
+components = "clippy,llvm-tools-preview,rustfmt"
+profile = "minimal"

@@ -33,6 +33,12 @@ jobs:
           ruff check tasks tests
           ruff format --check tasks tests
 
+      - name: Check Rust
+        run: |
+          cargo fmt --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Tests
         run: |
           tests/licenses-json.py

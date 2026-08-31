@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Nikolay Govorov
+# SPDX-License-Identifier: Apache-2.0
+
+[licenses]
+version = 2
+# Build-only Lightning CSS and Oxc dependencies also use permissive ISC/BSD/BSL terms and
+# file-level MPL-2.0. Keep accepted licenses explicit rather than maintaining crate exceptions.
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+]

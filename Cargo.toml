@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Nikolay Govorov
+# SPDX-License-Identifier: Apache-2.0
+
+[workspace]
+members = ["crates/ui-build"]
+resolver = "3"
+
+[workspace.package]
+publish = false
+edition = "2024"
+rust-version = "1.97"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Nikolay Govorov <me@govorov.online>"]
+homepage = "https://dimidiumlabs.io"
+repository = "https://git.dimidiumlabs.io/platform"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = "warn"
