@@ -1,0 +1,276 @@
+/* SPDX-FileCopyrightText: 2026 Nikolay Govorov */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('/-/assets/fonts/ibm-plex-sans-variable-0.2.0-roman.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('/-/assets/fonts/ibm-plex-sans-variable-0.2.0-italic.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('/-/assets/fonts/ibm-plex-mono-variable-1.0.0-roman.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('/-/assets/fonts/ibm-plex-mono-variable-1.0.0-italic.woff2')
+    format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Math';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/-/assets/fonts/ibm-plex-math-1.1.0-regular.woff2') format('woff2');
+}
+
+:root {
+  --readable-line-width: 32em;
+  --list-item-spacing: 0.875rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  margin: 0;
+  padding: 0;
+  font-family: 'IBM Plex Sans', 'IBM Plex Math', sans-serif;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea {
+  font: inherit;
+}
+
+code,
+kbd,
+pre,
+samp {
+  font-family: 'IBM Plex Mono', 'IBM Plex Math', monospace;
+}
+
+math {
+  font-family: 'IBM Plex Math', math;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  max-width: var(--readable-line-width);
+  margin: 0;
+  font-weight: 700;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+:is(h1, h2, h3, h4, h5, h6):not(:last-child) {
+  margin-bottom: 1rem;
+}
+
+h1 {
+  font-size: 2.25rem;
+}
+
+h2 {
+  font-size: 1.5rem;
+}
+
+h3 {
+  font-size: 1rem;
+}
+
+@media (min-width: 40rem) {
+  h1 {
+    font-size: 2.75rem;
+  }
+
+  h2 {
+    font-size: 1.75rem;
+  }
+}
+
+p {
+  max-width: var(--readable-line-width);
+  margin: 0;
+  text-wrap: pretty;
+}
+
+p:not(:last-child) {
+  margin-bottom: 1rem;
+}
+
+:is(h1, h2, h3, h4, h5, h6) + p {
+  margin-top: -0.75rem;
+}
+
+:is(ul, ol) {
+  max-width: var(--readable-line-width);
+  margin: -0.5rem 0 1rem;
+  padding: 0 0 0 1.5rem;
+}
+
+li > :is(ul, ol) {
+  margin-top: var(--list-item-spacing);
+}
+
+ul {
+  position: relative;
+  list-style: none;
+}
+
+ul > li::before {
+  position: absolute;
+  left: 0;
+  content: '—';
+  opacity: 0.3;
+}
+
+li:not(:last-child) {
+  margin-bottom: var(--list-item-spacing);
+}
+
+section,
+article {
+  padding: 1.25rem 0;
+}
+
+blockquote {
+  position: relative;
+  max-width: var(--readable-line-width);
+  margin: 1.5rem 0;
+  padding-left: 1.5rem;
+  font-size: 1.125rem;
+}
+
+blockquote::before {
+  position: absolute;
+  top: -0.125rem;
+  left: 0;
+  font-size: 3rem;
+  line-height: 1;
+  content: '“';
+  opacity: 0.2;
+}
+
+blockquote footer {
+  font-size: 1rem;
+  text-align: right;
+}
+
+blockquote cite {
+  font-style: normal;
+}
+
+code {
+  font-size: 0.75em;
+}
+
+pre {
+  position: relative;
+  margin: 1rem 0;
+  padding: 0.75rem 0 1rem;
+}
+
+pre code {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0.5em;
+  overflow-x: auto;
+}
+
+kbd {
+  padding: 0.0625em 0.25em;
+  border: thin solid rgb(0 0 0 / 20%);
+  border-radius: 0.1875em;
+  background: rgb(0 0 0 / 5%);
+  font: inherit;
+  font-size: 0.875em;
+}
+
+figure {
+  max-width: var(--readable-line-width);
+  margin: 0;
+}
+
+figure:not(:last-child) {
+  margin-bottom: 1rem;
+}
+
+figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-bottom: 1rem;
+}
+
+figure img {
+  margin-bottom: 0;
+}
+
+iframe {
+  display: block;
+}
+
+iframe:not(:last-child) {
+  margin-bottom: 1rem;
+}
+
+hr {
+  height: 0;
+  margin: 1rem 0;
+  border: 0;
+  border-bottom: thin solid currentcolor;
+  opacity: 0.2;
+}
+
+abbr {
+  cursor: help;
+}
+
+sup {
+  font-size: 0.75em;
+}

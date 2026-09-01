@@ -4,17 +4,33 @@ This repository contains shared building blocks for Dimidium Labs projects:
 reusable development and release tasks, common Go and npm libraries, and shared
 documentation.
 
+## Frontend and server infrastructure
+
+`crates/ui` provides the runtime `dimidiumlabs-ui` library: IBM Plex foundation
+assets, a framework-independent asset catalog, and the shared Maud `Document`
+component. `crates/server` provides `dimidiumlabs-server`, which serves that
+catalog through Axum and applies the shared CSP, ETag, conditional request,
+HEAD, and cache policy. Services keep their pages and component-local CSS and
+scripts, while registering application assets through the shared catalog.
+Conventional root resources remain at `/favicon.ico`, `/robots.txt`, and
+`/apple-touch-icon.png`; other browser assets use `/-/assets/`.
+
 ## UI build tool
 
-`crates/ui-build` provides the build-only `dimidiumlabs-ui-build` library. A service
-can call `dimidiumlabs_ui_build::build()?` from its thin `build.rs` to compile its
-colocated CSS Modules, global styles, and `src/**/*.js` or `src/**/*.ts` classic component scripts.
-Scripts are sorted by manifest-relative path, each is isolated in a strict IIFE, and Oxc parses,
-transpiles erasable TypeScript, compresses, and identifier-mangles them without property mangling
-or source maps. This is transpilation, not type-checking: ESM imports/exports, JSX/TSX, declaration
-bundles, and bundling are unsupported. The generated `stylesheet.css`, `css_modules.rs`, and
-`script.js` are build outputs; Lightning CSS and Oxc (including its transformer) remain build-only
-dependencies and never enter a service runtime dependency graph.
+`crates/ui-build` provides the build-only `dimidiumlabs-ui-build` library. A
+service can call `dimidiumlabs_ui_build::build()?` from its thin `build.rs` to
+compile its colocated CSS Modules, global styles, and `src/**/*.js` or
+`src/**/*.ts` classic component scripts. Scripts are sorted by manifest-relative
+path, each is isolated in a strict IIFE, and Oxc parses, transpiles erasable
+TypeScript, compresses, and identifier-mangles them without property mangling or
+source maps. This is transpilation, not type-checking: ESM imports/exports,
+JSX/TSX, declaration bundles, and bundling are unsupported. The generated
+`stylesheet.css`, `css_modules.rs`, and `script.js` are build outputs. Styles
+from `src/styles/*.css` are placed in the `global` cascade layer, while CSS
+Modules are placed in the later `components` layer so component-local rules
+always take priority over the shared semantic foundation. Lightning CSS and Oxc
+(including its transformer) remain build-only dependencies and never enter a
+service runtime dependency graph.
 
 The current executable tasks live in `tasks/`. GitHub Actions is only a runner
 for these tasks. Projects include `tasks/` with
@@ -31,16 +47,15 @@ Consuming projects pin this repository by commit SHA.
 ## Packaging
 
 Projects build and stage their own binaries and keep their nFPM configuration.
-The shared [`package`](tasks/package.py) task creates only the formats explicitly
-requested by a project: nFPM packages (`deb`, `rpm`, or `apk`) and portable
-archives (`tar.gz` or `zip`). APK configurations may use
+The shared [`package`](tasks/package.py) task creates only the formats
+explicitly requested by a project: nFPM packages (`deb`, `rpm`, or `apk`) and
+portable archives (`tar.gz` or `zip`). APK configurations may use
 `${PACKAGE_KEY_VERSION}` in `apk.signature.key_name`; the task renders the
 four-digit generation before invoking nFPM. DEB and RPM payloads are built by
 nFPM and then signed through `debsigs` and `rpmsign`, allowing CI to use only an
 OpenPGP signing subkey while the certification key remains offline. The shared
-[`publish`](tasks/publish.py) task adds
-explicitly selected package formats to signed repositories in the organization
-package bucket.
+[`publish`](tasks/publish.py) task adds explicitly selected package formats to
+signed repositories in the organization package bucket.
 
 ```console
 mise run package -- \
@@ -101,11 +116,10 @@ The selected formats map to these layouts:
 
 APT and RPM metadata refer to the aggregate organization OpenPGP bundle at
 `/packages.gpg`. Immutable generation keys live at
-`/keys/packages.<version>.gpg` and
-`/keys/packages.<version>.rsa.pub`. APK packages and indexes embed
-the versioned RSA key name. Public keys are provisioned independently; each
-publication checks its signing keys against the selected generation and never
-creates or replaces key objects.
+`/keys/packages.<version>.gpg` and `/keys/packages.<version>.rsa.pub`. APK
+packages and indexes embed the versioned RSA key name. Public keys are
+provisioned independently; each publication checks its signing keys against the
+selected generation and never creates or replaces key objects.
 
 Bucket configuration comes from `S3_BUCKET`, `S3_ENDPOINT`, `S3_PUBLIC_URL`,
 `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. `PACKAGE_KEY_VERSION` selects
@@ -150,13 +164,23 @@ mise run licenses-json -- \
 
 Use `--check` with the same arguments in CI to verify that a committed bundle is
 up to date, or `--offline` when all dependency sources are already cached.
+Crates that bundle non-Rust resources declare their license files in package
+metadata; `licenses-json` merges those notices even when the crate itself is a
+private dependency ignored by cargo-about:
+
+```toml
+[package.metadata.dimidiumlabs]
+bundled-licenses = [
+  { id = "OFL-1.1", name = "SIL Open Font License 1.1", path = "../../LICENSES/OFL-1.1.txt" },
+]
+```
 
 ### Sign-off policy
 
 `tasks/signoff.py` verifies that:
 
-- authors and co-authors with an email from
-  `config/signoff-approved-emails` are trusted without a trailer;
+- authors and co-authors with an email from `config/signoff-approved-emails` are
+  trusted without a trailer;
 - `CLA.md` declares exactly one version;
 - every non-approved author and co-author has a `Signed-off-by` trailer exactly
   matching their commit identity;
@@ -206,5 +230,5 @@ Remember, AI agents should make software better, not worse.
 
 ## Licensing
 
-Unless noted otherwise, software and configuration are licensed under Apache-2.0.
-Documentation is licensed under CC-BY-4.0.
+Unless noted otherwise, software and configuration are licensed under
+Apache-2.0. Documentation is licensed under CC-BY-4.0.

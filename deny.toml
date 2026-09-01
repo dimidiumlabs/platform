@@ -13,5 +13,6 @@ allow = [
   "ISC",
   "MIT",
   "MPL-2.0",
+  "OFL-1.1",
   "Unicode-3.0",
 ]

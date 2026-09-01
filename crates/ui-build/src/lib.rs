@@ -42,7 +42,8 @@ pub struct Output {
 /// composition need another file, or Lightning CSS rejects an input.
 pub fn compile(manifest_dir: &Path, out_dir: &Path) -> Result<Output, Error> {
     let inputs = discover(manifest_dir)?;
-    let mut stylesheet = String::new();
+    let mut global_styles = String::new();
+    let mut component_styles = String::new();
     let mut modules = BTreeMap::new();
     let mut scripts = Vec::new();
 
@@ -54,7 +55,7 @@ pub fn compile(manifest_dir: &Path, out_dir: &Path) -> Result<Output, Error> {
         match input.kind {
             InputKind::ModuleCss => {
                 let (code, exports) = css::compile_module(&source, &input.logical_path)?;
-                stylesheet.push_str(&code);
+                component_styles.push_str(&code);
                 let module_name = input.module_name.clone().ok_or_else(|| Error::Css {
                     path: input.logical_path.clone(),
                     message: "module input has no module name".to_owned(),
@@ -62,7 +63,7 @@ pub fn compile(manifest_dir: &Path, out_dir: &Path) -> Result<Output, Error> {
                 modules.insert(module_name, exports);
             }
             InputKind::GlobalCss => {
-                stylesheet.push_str(&css::compile_global(&source, &input.logical_path)?);
+                global_styles.push_str(&css::compile_global(&source, &input.logical_path)?);
             }
             InputKind::Script => scripts.push((
                 input.logical_path.as_str(),
@@ -75,6 +76,7 @@ pub fn compile(manifest_dir: &Path, out_dir: &Path) -> Result<Output, Error> {
         }
     }
     let script = script::compile_scripts(&scripts)?;
+    let stylesheet = layered_stylesheet(&global_styles, &component_styles);
 
     fs::create_dir_all(out_dir).map_err(|source| Error::Io {
         path: out_dir.to_owned(),
@@ -271,6 +273,21 @@ fn collect_inputs(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Erro
     Ok(())
 }
 
+fn layered_stylesheet(global_styles: &str, component_styles: &str) -> String {
+    let mut stylesheet = String::from("@layer global,components;");
+    if !global_styles.is_empty() {
+        stylesheet.push_str("@layer global{");
+        stylesheet.push_str(global_styles);
+        stylesheet.push('}');
+    }
+    if !component_styles.is_empty() {
+        stylesheet.push_str("@layer components{");
+        stylesheet.push_str(component_styles);
+        stylesheet.push('}');
+    }
+    stylesheet
+}
+
 fn write_output(path: &Path, content: &str) -> Result<(), Error> {
     fs::write(path, content).map_err(|source| Error::Io {
         path: path.to_owned(),
@@ -335,6 +352,19 @@ mod tests {
     }
 
     #[test]
+    fn component_layer_follows_and_overrides_global_layer() {
+        let stylesheet = layered_stylesheet(
+            "@font-face{font-family:test;src:url(test.woff2)}p{margin:1rem}",
+            ".card{margin:0}",
+        );
+        assert_eq!(
+            stylesheet,
+            "@layer global,components;@layer global{@font-face{font-family:test;src:url(test.woff2)}p{margin:1rem}}@layer components{.card{margin:0}}",
+        );
+        assert!(css::compile_global(&stylesheet, "generated.css").is_ok());
+    }
+
+    #[test]
     fn output_is_checkout_independent() {
         let first = tempdir().unwrap();
         let second = tempdir().unwrap();
@@ -382,6 +412,9 @@ mod tests {
         let stylesheet = fs::read_to_string(output.path().join("stylesheet.css")).unwrap();
         let bindings = fs::read_to_string(output.path().join("css_modules.rs")).unwrap();
         assert!(!stylesheet.contains(".card{") && stylesheet.contains("body{margin:0"));
+        assert!(stylesheet.starts_with("@layer global,components;"));
+        assert!(stylesheet.contains("@layer global{body{margin:0}"));
+        assert!(stylesheet.contains("@layer components{"));
         assert!(bindings.contains("pub mod card"));
         assert_eq!(
             fs::read_to_string(output.path().join("script.js")).unwrap(),

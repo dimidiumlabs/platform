@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Nikolay Govorov
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "dimidiumlabs-ui"
+description = "Shared frontend foundation and document components for Dimidium Labs services"
+version.workspace = true
+
+build = "build.rs"
+authors.workspace = true
+edition.workspace = true
+license = "Apache-2.0 AND OFL-1.1"
+publish.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[package.metadata.dimidiumlabs]
+bundled-licenses = [
+  { id = "OFL-1.1", name = "SIL Open Font License 1.1", path = "../../LICENSES/OFL-1.1.txt" },
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+maud = "0.27"
+
+[build-dependencies]
+dimidiumlabs-ui-build = { path = "../ui-build" }

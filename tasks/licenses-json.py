@@ -91,6 +91,108 @@ def cargo_about_config(metadata: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def bundled_license_sources(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Load explicitly declared licenses for non-Rust resources bundled by crates."""
+    sources: list[dict[str, Any]] = []
+    for package in sorted(metadata.get("packages", []), key=lambda item: item["name"]):
+        package_metadata = package.get("metadata") or {}
+        dimidiumlabs = package_metadata.get("dimidiumlabs", {})
+        if not isinstance(dimidiumlabs, dict):
+            raise TaskError(
+                f"{TASK}: package {package['name']}: "
+                "metadata.dimidiumlabs must be a table"
+            )
+        bundled = dimidiumlabs.get("bundled-licenses", [])
+        if not isinstance(bundled, list):
+            raise TaskError(
+                f"{TASK}: package {package['name']}: "
+                "metadata.dimidiumlabs.bundled-licenses must be an array"
+            )
+
+        manifest_directory = Path(package["manifest_path"]).parent
+        for declaration in bundled:
+            if not isinstance(declaration, dict):
+                raise TaskError(
+                    f"{TASK}: package {package['name']}: "
+                    "bundled license declaration must be a table"
+                )
+            try:
+                identifier = declaration["id"]
+                name = declaration["name"]
+                relative_path = declaration["path"]
+            except KeyError as error:
+                raise TaskError(
+                    f"{TASK}: package {package['name']}: bundled license is missing "
+                    f"{error.args[0]}"
+                ) from error
+            if not all(
+                isinstance(value, str) and value
+                for value in (identifier, name, relative_path)
+            ):
+                raise TaskError(
+                    f"{TASK}: package {package['name']}: bundled license fields "
+                    "id, name, and path must be non-empty strings"
+                )
+            path = Path(relative_path)
+            if path.is_absolute():
+                raise TaskError(
+                    f"{TASK}: package {package['name']}: bundled license path "
+                    "must be relative to Cargo.toml"
+                )
+            try:
+                text = (manifest_directory / path).read_text(encoding="utf-8")
+            except OSError as error:
+                raise TaskError(
+                    f"{TASK}: package {package['name']}: cannot read bundled "
+                    f"license {relative_path}: {error}"
+                ) from error
+            sources.append(
+                {
+                    "name": name,
+                    "id": identifier,
+                    "text": text,
+                    "used_by": [
+                        {
+                            "crate": {
+                                "name": package["name"],
+                                "version": package["version"],
+                                "repository": package.get("repository"),
+                            }
+                        }
+                    ],
+                }
+            )
+    return sources
+
+
+def merge_bundled_licenses(
+    report: dict[str, Any], bundled: Sequence[dict[str, Any]]
+) -> None:
+    licenses = report.setdefault("licenses", [])
+    for source in bundled:
+        existing = next(
+            (
+                candidate
+                for candidate in licenses
+                if candidate["id"] == source["id"]
+                and candidate["text"] == source["text"]
+            ),
+            None,
+        )
+        if existing is None:
+            licenses.append(source)
+            continue
+        known = {
+            (usage["crate"]["name"], usage["crate"]["version"])
+            for usage in existing["used_by"]
+        }
+        for usage in source["used_by"]:
+            identity = (usage["crate"]["name"], usage["crate"]["version"])
+            if identity not in known:
+                existing["used_by"].append(usage)
+                known.add(identity)
+
+
 def normalized_output(report: dict[str, Any]) -> str:
     licenses: list[dict[str, Any]] = []
     for source in report.get("licenses", []):
@@ -164,6 +266,7 @@ async def generate(
     offline: bool,
 ) -> str:
     metadata = await cargo_metadata(manifest_path, offline)
+    bundled = bundled_license_sources(metadata)
 
     with tempfile.TemporaryDirectory(prefix=f"{TASK}-") as temporary:
         work = Path(temporary)
@@ -202,6 +305,7 @@ async def generate(
                 f"{TASK}: cargo-about returned invalid JSON: {error}"
             ) from error
 
+    merge_bundled_licenses(raw_report, bundled)
     return normalized_output(raw_report)
 
 
