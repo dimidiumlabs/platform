@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # fmt: off
 #MISE description="Generate embeddable Rust dependency license JSON"
-#MISE tools={"pipx"="1.16.7","python"="3.14.7","cargo:cargo-about"="0.8.4"}
+#MISE tools={"pipx"="1.16.7","python"="3.14.7","github:EmbarkStudios/cargo-about"="0.8.4"}
 # fmt: on
 # /// script
 # requires-python = ">=3.11"
