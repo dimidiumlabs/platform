@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nikolay Govorov
 // SPDX-License-Identifier: Apache-2.0
 
-use std::borrow::Cow;
+use std::{collections::BTreeMap, error::Error, fmt};
 
 pub const ASSET_PREFIX: &str = "/-/assets";
 
@@ -9,151 +9,314 @@ pub const ROBOTS_PATH: &str = "/robots.txt";
 pub const FAVICON_ICO_PATH: &str = "/favicon.ico";
 pub const FAVICON_SVG_PATH: &str = "/-/assets/favicon.svg";
 pub const APPLE_TOUCH_ICON_PATH: &str = "/apple-touch-icon.png";
-
 pub const MANIFEST_PATH: &str = "/-/assets/manifest.webmanifest";
 
-pub const APP_SCRIPT_PATH: &str = "/-/assets/app.js";
-pub const APP_STYLESHEET_PATH: &str = "/-/assets/app.css";
-pub const GLOBAL_STYLESHEET_PATH: &str = "/-/assets/global.css";
+pub const FONT_PREFIX: &str = "/-/assets/fonts";
 
+/// How a generated asset is used by the server and HTML document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetKind {
+    Stylesheet,
+    Script,
+    Static { content_type: &'static str },
+}
+
+impl AssetKind {
+    #[must_use]
+    pub const fn content_type(self) -> &'static str {
+        match self {
+            Self::Stylesheet => "text/css; charset=utf-8",
+            Self::Script => "text/javascript; charset=utf-8",
+            Self::Static { content_type } => content_type,
+        }
+    }
+}
+
+/// Cache policy for an asset's canonical, fingerprinted name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CachePolicy {
     Revalidate,
     Immutable,
 }
 
-#[derive(Debug, Clone)]
+/// One build-generated, in-memory asset.
+///
+/// The original and canonical names, cache policy, bytes, and SHA-384 integrity value are emitted
+/// together by `dimidiumlabs-ui-build`. Compiled CSS/JavaScript use a distinct xxHash64-
+/// fingerprinted canonical name; copied source assets retain their logical name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Asset {
-    path: &'static str,
-    content_type: &'static str,
-    bytes: Cow<'static, [u8]>,
-    cache_policy: CachePolicy,
+    kind: AssetKind,
+    name: &'static str,
+    fingerprinted_name: &'static str,
+    cache: CachePolicy,
+    bytes: &'static [u8],
+    integrity: &'static str,
 }
 
 impl Asset {
+    /// Creates an entry emitted by `dimidiumlabs-ui-build`.
+    ///
+    /// Callers must keep `bytes`, the canonical name, and `integrity` from the same build output.
+    /// [`AssetsCatalog`] deliberately validates metadata shape without hashing static bytes at
+    /// runtime.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn embedded(
-        path: &'static str,
-        content_type: &'static str,
+    pub const fn new(
+        kind: AssetKind,
+        name: &'static str,
+        fingerprinted_name: &'static str,
+        cache: CachePolicy,
         bytes: &'static [u8],
-        cache_policy: CachePolicy,
+        integrity: &'static str,
     ) -> Self {
         Self {
-            path,
-            content_type,
-            bytes: Cow::Borrowed(bytes),
-            cache_policy,
+            kind,
+            name,
+            fingerprinted_name,
+            cache,
+            bytes,
+            integrity,
         }
     }
 
     #[must_use]
-    pub fn owned(
-        path: &'static str,
-        content_type: &'static str,
-        bytes: Vec<u8>,
-        cache_policy: CachePolicy,
-    ) -> Self {
+    pub const fn kind(self) -> AssetKind {
+        self.kind
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    #[must_use]
+    pub const fn fingerprinted_name(self) -> &'static str {
+        self.fingerprinted_name
+    }
+
+    #[must_use]
+    pub const fn cache(self) -> CachePolicy {
+        self.cache
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> &'static [u8] {
+        self.bytes
+    }
+
+    #[must_use]
+    pub const fn integrity(self) -> &'static str {
+        self.integrity
+    }
+
+    #[must_use]
+    pub const fn content_type(self) -> &'static str {
+        self.kind.content_type()
+    }
+}
+
+/// Ordered, transport-agnostic composition of generated assets.
+///
+/// The catalog validates names and metadata syntax. It trusts the build-generated digest-to-byte
+/// relationship so constructing a catalog never hashes embedded asset bodies at runtime.
+#[derive(Debug, Clone, Default)]
+pub struct AssetsCatalog {
+    assets: Vec<Asset>,
+    names: BTreeMap<&'static str, AssetLookup>,
+}
+
+impl AssetsCatalog {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
-            path,
-            content_type,
-            bytes: Cow::Owned(bytes),
-            cache_policy,
+            assets: Vec::new(),
+            names: BTreeMap::new(),
         }
     }
 
-    #[must_use]
-    pub const fn path(&self) -> &'static str {
-        self.path
+    /// Appends one generated asset set while retaining stylesheet and script order.
+    ///
+    /// # Errors
+    /// Returns an error when names or integrity metadata are invalid, a distinct canonical name
+    /// does not contain a 16-character lowercase hexadecimal fingerprint in the expected
+    /// position, or either name duplicates an earlier entry.
+    pub fn with(mut self, assets: &'static [Asset]) -> Result<Self, AssetsCatalogError> {
+        for asset in assets {
+            self.insert(*asset)?;
+        }
+        Ok(self)
     }
 
     #[must_use]
-    pub const fn content_type(&self) -> &'static str {
-        self.content_type
+    pub fn assets(&self) -> &[Asset] {
+        &self.assets
     }
 
     #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+    pub fn lookup(&self, name: &str) -> Option<AssetLookup> {
+        self.names.get(name).copied()
+    }
+
+    pub fn stylesheets(&self) -> impl Iterator<Item = Asset> + '_ {
+        self.assets
+            .iter()
+            .copied()
+            .filter(|asset| asset.kind() == AssetKind::Stylesheet)
+    }
+
+    pub fn scripts(&self) -> impl Iterator<Item = Asset> + '_ {
+        self.assets
+            .iter()
+            .copied()
+            .filter(|asset| asset.kind() == AssetKind::Script)
+    }
+
+    fn insert(&mut self, asset: Asset) -> Result<(), AssetsCatalogError> {
+        if !valid_name(asset.name()) {
+            return Err(AssetsCatalogError::InvalidName(asset.name()));
+        }
+        if !valid_sha384_integrity(asset.integrity()) {
+            return Err(AssetsCatalogError::InvalidIntegrity(asset.name()));
+        }
+        if asset.name() != asset.fingerprinted_name()
+            && !valid_fingerprinted_name(asset.name(), asset.fingerprinted_name())
+        {
+            return Err(AssetsCatalogError::InvalidFingerprint(asset.name()));
+        }
+        if self
+            .names
+            .insert(
+                asset.name(),
+                AssetLookup {
+                    asset,
+                    fingerprinted: false,
+                },
+            )
+            .is_some()
+        {
+            return Err(AssetsCatalogError::DuplicateName(asset.name()));
+        }
+        if asset.name() != asset.fingerprinted_name()
+            && self
+                .names
+                .insert(
+                    asset.fingerprinted_name(),
+                    AssetLookup {
+                        asset,
+                        fingerprinted: true,
+                    },
+                )
+                .is_some()
+        {
+            return Err(AssetsCatalogError::DuplicateName(
+                asset.fingerprinted_name(),
+            ));
+        }
+        self.assets.push(asset);
+        Ok(())
+    }
+}
+
+/// Result of looking up either an original or fingerprinted asset name.
+///
+/// Build-generated CSS and JavaScript have distinct fingerprinted names. Copied source assets
+/// retain their logical name in both fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssetLookup {
+    asset: Asset,
+    fingerprinted: bool,
+}
+
+impl AssetLookup {
+    #[must_use]
+    pub const fn asset(self) -> Asset {
+        self.asset
     }
 
     #[must_use]
-    pub const fn cache_policy(&self) -> CachePolicy {
-        self.cache_policy
+    pub const fn is_fingerprinted(self) -> bool {
+        self.fingerprinted
     }
 }
 
-pub const FONT_PREFIX: &str = "/-/assets/fonts";
-
-/// Registers a revalidated CSS asset with the canonical content type.
-#[must_use]
-pub const fn css(path: &'static str, bytes: &'static [u8]) -> Asset {
-    Asset::embedded(
-        path,
-        "text/css; charset=utf-8",
-        bytes,
-        CachePolicy::Revalidate,
-    )
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetsCatalogError {
+    InvalidName(&'static str),
+    InvalidIntegrity(&'static str),
+    InvalidFingerprint(&'static str),
+    DuplicateName(&'static str),
 }
 
-/// Registers a revalidated classic JavaScript asset with the canonical content type.
-#[must_use]
-pub const fn javascript(path: &'static str, bytes: &'static [u8]) -> Asset {
-    Asset::embedded(
-        path,
-        "text/javascript; charset=utf-8",
-        bytes,
-        CachePolicy::Revalidate,
-    )
+impl fmt::Display for AssetsCatalogError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(formatter, "invalid asset name {name:?}"),
+            Self::InvalidIntegrity(name) => {
+                write!(formatter, "asset {name:?} has invalid integrity metadata")
+            }
+            Self::InvalidFingerprint(name) => {
+                write!(formatter, "asset {name:?} has invalid fingerprint metadata")
+            }
+            Self::DuplicateName(name) => write!(formatter, "duplicate asset name {name:?}"),
+        }
+    }
 }
 
-/// Registers a revalidated UTF-8 plain-text asset.
-#[must_use]
-pub const fn text(path: &'static str, bytes: &'static [u8]) -> Asset {
-    Asset::embedded(
-        path,
-        "text/plain; charset=utf-8",
-        bytes,
-        CachePolicy::Revalidate,
-    )
+impl Error for AssetsCatalogError {}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'))
+        && name
+            .split('/')
+            .all(|component| !component.is_empty() && !matches!(component, "." | ".."))
 }
 
-/// Registers a revalidated image asset.
-#[must_use]
-pub const fn image(path: &'static str, content_type: &'static str, bytes: &'static [u8]) -> Asset {
-    Asset::embedded(path, content_type, bytes, CachePolicy::Revalidate)
+fn valid_sha384_integrity(value: &str) -> bool {
+    value.strip_prefix("sha384-").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+    })
 }
 
-/// Registers a versioned WOFF2 asset with immutable caching.
-#[must_use]
-pub const fn font(path: &'static str, bytes: &'static [u8]) -> Asset {
-    Asset::embedded(path, "font/woff2", bytes, CachePolicy::Immutable)
-}
-
-#[must_use]
-pub fn foundation_assets() -> Vec<Asset> {
-    vec![
-        css(GLOBAL_STYLESHEET_PATH, crate::GLOBAL_STYLESHEET),
-        font(
-            "/-/assets/fonts/ibm-plex-sans-variable-0.2.0-roman.woff2",
-            include_bytes!("../assets/fonts/ibm-plex-sans-variable-roman.woff2"),
-        ),
-        font(
-            "/-/assets/fonts/ibm-plex-sans-variable-0.2.0-italic.woff2",
-            include_bytes!("../assets/fonts/ibm-plex-sans-variable-italic.woff2"),
-        ),
-        font(
-            "/-/assets/fonts/ibm-plex-mono-variable-1.0.0-roman.woff2",
-            include_bytes!("../assets/fonts/ibm-plex-mono-variable-roman.woff2"),
-        ),
-        font(
-            "/-/assets/fonts/ibm-plex-mono-variable-1.0.0-italic.woff2",
-            include_bytes!("../assets/fonts/ibm-plex-mono-variable-italic.woff2"),
-        ),
-        font(
-            "/-/assets/fonts/ibm-plex-math-1.1.0-regular.woff2",
-            include_bytes!("../assets/fonts/ibm-plex-math-regular.woff2"),
-        ),
-    ]
+fn valid_fingerprinted_name(name: &str, fingerprinted_name: &str) -> bool {
+    let (directory, filename) = name
+        .rsplit_once('/')
+        .map_or(("", name), |(directory, filename)| (directory, filename));
+    let (fingerprinted_directory, fingerprinted_filename) = fingerprinted_name
+        .rsplit_once('/')
+        .map_or(("", fingerprinted_name), |(directory, filename)| {
+            (directory, filename)
+        });
+    if directory != fingerprinted_directory {
+        return false;
+    }
+    let (stem, extension) = filename
+        .rsplit_once('.')
+        .map_or((filename, None), |(stem, extension)| {
+            (stem, Some(extension))
+        });
+    let Some(suffix) = fingerprinted_filename.strip_prefix(stem) else {
+        return false;
+    };
+    let suffix = match extension {
+        Some(extension) => suffix.strip_suffix(&format!(".{extension}")),
+        None => Some(suffix),
+    };
+    suffix.is_some_and(|suffix| {
+        suffix.strip_prefix('.').is_some_and(|hash| {
+            hash.len() == 16
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+    })
 }
 
 #[cfg(test)]
@@ -161,24 +324,97 @@ mod tests {
     use super::*;
 
     #[test]
-    fn foundation_assets_use_canonical_paths_and_versioned_fonts() {
-        let assets = foundation_assets();
-        assert_eq!(assets[0].path(), GLOBAL_STYLESHEET_PATH);
-        assert!(assets[0].bytes().starts_with(b"@layer global,components;"));
-        assert!(
-            assets[0]
-                .bytes()
-                .windows(b"@font-face".len())
-                .any(|window| window == b"@font-face")
+    fn generated_asset_keeps_all_build_time_metadata_together() {
+        const ASSET: Asset = Asset::new(
+            AssetKind::Script,
+            "app.js",
+            "app.0123456789abcdef.js",
+            CachePolicy::Immutable,
+            b"console.log('ok')",
+            "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
         );
-        assert_eq!(assets.len(), 6);
-        assert!(assets.iter().skip(1).all(|asset| {
-            asset.path().starts_with(FONT_PREFIX)
-                && ["0.2.0", "1.0.0", "1.1.0"]
-                    .iter()
-                    .any(|version| asset.path().contains(version))
-                && asset.cache_policy() == CachePolicy::Immutable
-                && !asset.bytes().is_empty()
-        }));
+        assert_eq!(ASSET.kind(), AssetKind::Script);
+        assert_eq!(ASSET.name(), "app.js");
+        assert_eq!(ASSET.fingerprinted_name(), "app.0123456789abcdef.js");
+        assert_eq!(ASSET.cache(), CachePolicy::Immutable);
+        assert!(ASSET.integrity().starts_with("sha384-"));
+        assert_eq!(ASSET.bytes(), b"console.log('ok')");
+    }
+
+    #[test]
+    fn catalog_composes_in_order_and_looks_up_both_generated_names() {
+        const FOUNDATION: &[Asset] = &[Asset::new(
+            AssetKind::Stylesheet,
+            "global.css",
+            "global.0000000000000001.css",
+            CachePolicy::Immutable,
+            b"global",
+            "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+        )];
+        const APPLICATION: &[Asset] = &[
+            Asset::new(
+                AssetKind::Stylesheet,
+                "app.css",
+                "app.0000000000000002.css",
+                CachePolicy::Immutable,
+                b"app",
+                "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+            ),
+            Asset::new(
+                AssetKind::Static {
+                    content_type: "image/png",
+                },
+                "icon.png",
+                "icon.png",
+                CachePolicy::Revalidate,
+                b"icon",
+                "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+            ),
+        ];
+        let catalog = AssetsCatalog::new()
+            .with(FOUNDATION)
+            .unwrap()
+            .with(APPLICATION)
+            .unwrap();
+        assert_eq!(
+            catalog.stylesheets().map(Asset::name).collect::<Vec<_>>(),
+            ["global.css", "app.css"]
+        );
+        assert!(catalog.lookup("global.css").is_some());
+        assert!(
+            catalog
+                .lookup("global.0000000000000001.css")
+                .unwrap()
+                .is_fingerprinted()
+        );
+        assert!(!catalog.lookup("icon.png").unwrap().is_fingerprinted());
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_and_malformed_generated_metadata() {
+        const VALID: Asset = Asset::new(
+            AssetKind::Stylesheet,
+            "app.css",
+            "app.0000000000000001.css",
+            CachePolicy::Immutable,
+            b"app",
+            "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+        );
+        const INVALID: Asset = Asset::new(
+            AssetKind::Stylesheet,
+            "other.css",
+            "other.short.css",
+            CachePolicy::Immutable,
+            b"other",
+            "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+        );
+        assert!(matches!(
+            AssetsCatalog::new().with(&[VALID, VALID]),
+            Err(AssetsCatalogError::DuplicateName("app.css"))
+        ));
+        assert!(matches!(
+            AssetsCatalog::new().with(&[INVALID]),
+            Err(AssetsCatalogError::InvalidFingerprint("other.css"))
+        ));
     }
 }

@@ -17,8 +17,11 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 lightningcss = { version = "=1.0.0-alpha.72", default-features = false }
-oxc = { version = "=0.147.0", default-features = false, features = ["codegen", "mangler", "minifier", "semantic", "transformer"] }
+oxc = { version = "=0.148.0", default-features = false, features = ["codegen", "mangler", "minifier", "semantic", "transformer"] }
+sha2 = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
 
 [dev-dependencies]
 tempfile = "3.24.0"

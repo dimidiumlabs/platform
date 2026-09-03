@@ -1,9 +1,10 @@
 # IBM Plex webfonts
 
-These unmodified complete WOFF2 fonts come from official
+The unmodified complete WOFF2 files bundled in [`src/assets/fonts`](.) come from official
 [IBM Plex releases](https://github.com/IBM/plex/releases). Sans and Mono expose
 a weight axis from 100 through 700, with separate Roman and italic variable font
-files. Math supplies its regular OpenType Math face and extended symbol coverage.
+files. Math supplies its regular OpenType Math face and extended symbol
+coverage.
 
 ## IBM Plex Sans Variable 0.2.0
 
@@ -40,4 +41,4 @@ files. Math supplies its regular OpenType Math face and extended symbol coverage
   `5fc8851cc77b557289aaa90c06044ce113163fea386cd71109e2997c99ea8a8c`
 
 The fonts and reserved name "Plex" are covered by the SIL Open Font License 1.1;
-see [`LICENSES/OFL-1.1.txt`](../../../../LICENSES/OFL-1.1.txt).
+see [`LICENSES/OFL-1.1.txt`](../../../../../LICENSES/OFL-1.1.txt).

@@ -1,200 +1,120 @@
 # Dimidium Labs platform
 
-This repository contains shared building blocks for Dimidium Labs projects:
-reusable development and release tasks, common Go and npm libraries, and shared
-documentation.
+Shared Rust crates for web services and reusable `mise` tasks for building,
+publishing, and validating projects.
 
-## Frontend and server infrastructure
+## Web service
 
-`crates/ui` provides the runtime `dimidiumlabs-ui` library: IBM Plex foundation
-assets, a framework-independent asset catalog, and the shared Maud `Document`
-component. `crates/server` provides `dimidiumlabs-server`, which serves that
-catalog through Axum and applies the shared CSP, ETag, conditional request,
-HEAD, and cache policy. Services keep their pages and component-local CSS and
-scripts, while registering application assets through the shared catalog.
-Conventional root resources remain at `/favicon.ico`, `/robots.txt`, and
-`/apple-touch-icon.png`; other browser assets use `/-/assets/`.
+- [`dimidiumlabs-ui`](crates/ui) provides the shared design system: fonts,
+  assets, design tokens, UI components, and the ordered transport-agnostic
+  `AssetsCatalog`.
+- [`dimidiumlabs-ui-build`](crates/ui-build) is a build-script tool for global
+  styles, CSS Modules, classic JavaScript or TypeScript component scripts, and
+  files under `src/assets`. Static files are copied unchanged into build output;
+  one generated asset array embeds every resource with its logical name, cache
+  policy, bytes, and build-time SHA-384 integrity. Its `build(id, sources,
+  assets)` API takes package-local paths below `src` instead of assuming a crate
+  layout. Compiled CSS and JavaScript also receive a complete 16-hex xxHash64
+  filename fingerprint.
+- [`dimidiumlabs-server`](crates/server) serves that catalog through Axum and
+  applies CSP, integrity-based strong ETags, conditional request, HEAD, and cache policy.
+  Its `service` module provides composable Tower admission, client-IP, host,
+  rate-limit, drain, HTML, asset, HSTS, body, and redirect primitives. Top-level
+  TLS and Hyper transport modules provide connection-level infrastructure.
+  Root resources use their conventional paths; other assets are served from
+  `/-/assets/`.
 
-## UI build tool
+Services keep their pages and component-specific assets in their own crate and
+compose `AssetsCatalog::new().with(FOUNDATION).with(APPLICATION)` once for the
+HTML document, policy layers, and serving adapter.
 
-`crates/ui-build` provides the build-only `dimidiumlabs-ui-build` library. A
-service can call `dimidiumlabs_ui_build::build()?` from its thin `build.rs` to
-compile its colocated CSS Modules, global styles, and `src/**/*.js` or
-`src/**/*.ts` classic component scripts. Scripts are sorted by manifest-relative
-path, each is isolated in a strict IIFE, and Oxc parses, transpiles erasable
-TypeScript, compresses, and identifier-mangles them without property mangling or
-source maps. This is transpilation, not type-checking: ESM imports/exports,
-JSX/TSX, declaration bundles, and bundling are unsupported. The generated
-`stylesheet.css`, `css_modules.rs`, and `script.js` are build outputs. Styles
-from `src/styles/*.css` are placed in the `global` cascade layer, while CSS
-Modules are placed in the later `components` layer so component-local rules
-always take priority over the shared semantic foundation. Lightning CSS and Oxc
-(including its transformer) remain build-only dependencies and never enter a
-service runtime dependency graph.
+## Scripts
 
-The current executable tasks live in `tasks/`. GitHub Actions is only a runner
-for these tasks. Projects include `tasks/` with
-[mise remote Git includes](https://mise.jdx.dev/tasks/task-configuration.html#remote-git-includes).
-By default, tasks are fetched directly from this public repository over HTTPS:
+Executable tasks live in [`tasks/`](tasks). Consuming projects include this
+directory with
+[mise remote Git includes](https://mise.jdx.dev/tasks/task-configuration.html#remote-git-includes)
+and pin the repository to a commit SHA. Task metadata installs pinned tools on
+demand; project toolchains and system packages remain in the consuming project's
+`mise.toml`.
+
+Run `mise run <task> -- --help` for the complete command-line interface.
+
+### `package`
+
+Builds only the requested nFPM packages (`deb`, `rpm`, `apk`) or portable
+archives (`tar.gz`, `zip`). The consuming project owns its nFPM configuration
+and staged files. DEB and RPM packages can be signed with the OpenPGP
+environment variables; APK supports `PACKAGE_KEY_VERSION` and APK signing keys.
 
 ```console
-mise run signoff
+mise run package -- --version VERSION --arch ARCH --output DIR deb rpm apk
+mise run package -- --archive-root DIR --archive-name NAME --output DIR tar.gz zip
+```
+
+### `publish`
+
+Publishes selected package formats to the service and channel under
+`https://pkg.dimidiumlabs.io/<service>/`. Existing payloads are retained, and an
+S3 lock serializes repository metadata updates.
+
+```console
+mise run publish -- --service SERVICE --channel CHANNEL --input DIR deb rpm apk
+```
+
+Storage uses `S3_BUCKET`, `S3_ENDPOINT`, `S3_PUBLIC_URL`, `S3_ACCESS_KEY_ID`,
+and `S3_SECRET_ACCESS_KEY`. Signing uses `PACKAGE_KEY_VERSION`, the `GPG_*`
+variables, and `APK_PRIVATE_KEY`.
+
+### `container`
+
+Builds one or more tagged OCI images with Docker Buildx. Authentication and
+release policy stay with the caller; use `--push` or `--load` to export the
+result.
+
+```console
+mise run container -- --context . --file Dockerfile --platform linux/amd64,linux/arm64 --tag REGISTRY/IMAGE:TAG --push
+```
+
+### `chart`
+
+Strictly lints a Helm chart, packages an immutable version, and optionally
+pushes it to one or more OCI repositories. Use `--lint-only` when no package is
+needed.
+
+```console
+mise run chart -- --chart charts/service --version VERSION --app-version VERSION --output dist/charts --push oci://REGISTRY/charts
+```
+
+### `licenses`
+
+Checks canonical SPDX headers and REUSE metadata. Rust repositories are also
+checked with `cargo deny`.
+
+```console
 mise run licenses
 ```
 
-Consuming projects pin this repository by commit SHA.
+### `licenses-json`
 
-## Packaging
-
-Projects build and stage their own binaries and keep their nFPM configuration.
-The shared [`package`](tasks/package.py) task creates only the formats
-explicitly requested by a project: nFPM packages (`deb`, `rpm`, or `apk`) and
-portable archives (`tar.gz` or `zip`). APK configurations may use
-`${PACKAGE_KEY_VERSION}` in `apk.signature.key_name`; the task renders the
-four-digit generation before invoking nFPM. DEB and RPM payloads are built by
-nFPM and then signed through `debsigs` and `rpmsign`, allowing CI to use only an
-OpenPGP signing subkey while the certification key remains offline. The shared
-[`publish`](tasks/publish.py) task adds explicitly selected package formats to
-signed repositories in the organization package bucket.
+Generates a deterministic JSON bundle of Rust dependency licenses. Repeat
+`--target` for all supported targets; `--check` verifies a committed bundle, and
+`--offline` uses cached dependency sources. Licenses for bundled non-Rust
+resources can be declared in `package.metadata.dimidiumlabs.bundled-licenses`
+with an SPDX ID, name, and path relative to `Cargo.toml`.
 
 ```console
-mise run package -- \
-  --version VERSION --arch ARCH --output DIR \
-  [--config nfpm.yaml] [--apk-public-key NAME.rsa.pub] \
-  deb rpm apk
-
-mise run package -- \
-  --archive-root DIR --archive-name NAME --output DIR \
-  tar.gz zip
+mise run licenses-json -- --manifest-path Cargo.toml --output licenses.json --target x86_64-unknown-linux-gnu
 ```
 
-## OCI artifacts
+### `signoff`
 
-The shared [`container`](tasks/container.py) task builds one or more tagged OCI
-images with Docker Buildx. Registry authentication is deliberately left to the
-calling workflow, so the same build can be pushed to GHCR, Cloudflare, or
-another OCI registry. The [`chart`](tasks/chart.py) task strictly lints a Helm
-chart, packages an immutable version, and can push it to one or more OCI
-repositories.
+Checks contributor identities, matching `Signed-off-by` trailers, the
+`CLA-Version` declared by each commit's `CLA.md`, and registration of author and
+committer addresses in `.mailmap`.
 
 ```console
-mise run container -- \
-  --context . --file deploy/Dockerfile \
-  --platform linux/amd64,linux/arm64 \
-  --target site --build-arg APP=site \
-  --tag ghcr.io/example/site:1.2.3 \
-  --cache-scope site --push
-
-mise run chart -- \
-  --chart charts/service --version 1.2.3 --app-version 1.2.3 \
-  --output dist/charts --push oci://ghcr.io/example/charts
+mise run signoff
 ```
-
-Container tags, chart versions, credentials, and release policy remain owned by
-the consuming project. `--provenance false --sbom false` is available for
-registries that do not accept OCI attestation indexes. Without `--push` or
-`--load`, Buildx only validates and caches the build result.
-
-## Package repositories
-
-Projects publish beneath a service-owned prefix at
-`https://pkg.dimidiumlabs.io/<service>/`. Channels are explicit, previously
-published package payloads are retained, and an S3 lock serializes metadata
-updates for each service/channel.
-
-```console
-mise run publish -- \
-  --service SERVICE --channel CHANNEL --input DIR \
-  deb rpm apk
-```
-
-The selected formats map to these layouts:
-
-- APT: `<service>/apt/{dists,pool}/<channel>/`
-- RPM: `<service>/rpm/<channel>/`
-- APK: `<service>/apk/<channel>/<architecture>/`
-
-APT and RPM metadata refer to the aggregate organization OpenPGP bundle at
-`/packages.gpg`. Immutable generation keys live at
-`/keys/packages.<version>.gpg` and `/keys/packages.<version>.rsa.pub`. APK
-packages and indexes embed the versioned RSA key name. Public keys are
-provisioned independently; each publication checks its signing keys against the
-selected generation and never creates or replaces key objects.
-
-Bucket configuration comes from `S3_BUCKET`, `S3_ENDPOINT`, `S3_PUBLIC_URL`,
-`S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. `PACKAGE_KEY_VERSION` selects
-the four-digit key generation. OpenPGP signing uses `GPG_PRIVATE_KEY`,
-`GPG_PASSPHRASE`, and `GPG_KEY_ID`; APK index signing uses `APK_PRIVATE_KEY`.
-
-## Tool provisioning
-
-Each project declares its toolchain and standalone CLI dependencies in
-`mise.toml`. A fresh checkout is provisioned with one command:
-
-```console
-mise bootstrap
-```
-
-Shared tasks declare task-specific tools in their `#MISE tools` metadata, so
-`mise run` installs the same pinned versions on demand. Python tasks declare
-their dependencies inline with PEP 723 and run through pipx's standard pip
-backend, without a project virtual environment or install step. System libraries
-that cannot be installed as portable tools belong in `[bootstrap.packages]`.
-
-## Guardrails
-
-### Licensing policy
-
-`tasks/licenses.py` runs a pinned REUSE version and verifies the repository's
-licensing metadata and canonical SPDX copyright headers. In Rust projects it
-also runs a pinned `cargo deny check`.
-
-The separate `licenses-json` task uses cargo-about to generate a deterministic,
-embeddable JSON bundle for a Rust binary. It accepts every license declared by
-the dependency graph because policy enforcement remains the responsibility of
-`cargo deny`. Repeat `--target` to produce one bundle for all supported targets:
-
-```console
-mise run licenses-json -- \
-  --manifest-path crates/server/Cargo.toml \
-  --output crates/server/licenses.json \
-  --target x86_64-unknown-linux-gnu \
-  --target aarch64-unknown-linux-gnu
-```
-
-Use `--check` with the same arguments in CI to verify that a committed bundle is
-up to date, or `--offline` when all dependency sources are already cached.
-Crates that bundle non-Rust resources declare their license files in package
-metadata; `licenses-json` merges those notices even when the crate itself is a
-private dependency ignored by cargo-about:
-
-```toml
-[package.metadata.dimidiumlabs]
-bundled-licenses = [
-  { id = "OFL-1.1", name = "SIL Open Font License 1.1", path = "../../LICENSES/OFL-1.1.txt" },
-]
-```
-
-### Sign-off policy
-
-`tasks/signoff.py` verifies that:
-
-- authors and co-authors with an email from `config/signoff-approved-emails` are
-  trusted without a trailer;
-- `CLA.md` declares exactly one version;
-- every non-approved author and co-author has a `Signed-off-by` trailer exactly
-  matching their commit identity;
-- every commit with a non-approved author or co-author has exactly one
-  `CLA-Version` trailer matching the version declared by `CLA.md` in that
-  commit;
-- commits listed in `config/cla-unsupported-commits` retain their
-  `Signed-off-by` requirement but are explicitly not treated as covered by a
-  versioned CLA;
-- every non-approved author and committer email in the complete non-merge
-  history is registered in `.mailmap`.
-
-Approved emails and unsupported commits are maintained centrally so a pull
-request in a consuming repository cannot grant itself an exemption.
 
 ## Contributing
 

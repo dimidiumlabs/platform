@@ -1,17 +1,23 @@
 // SPDX-FileCopyrightText: 2026 Nikolay Govorov
 // SPDX-License-Identifier: Apache-2.0
 
+extern crate self as dimidiumlabs_ui;
+
 pub mod assets;
 pub mod components;
 
 pub use assets::{
-    APP_SCRIPT_PATH, APP_STYLESHEET_PATH, APPLE_TOUCH_ICON_PATH, ASSET_PREFIX, Asset, CachePolicy,
-    FAVICON_ICO_PATH, FAVICON_SVG_PATH, FONT_PREFIX, GLOBAL_STYLESHEET_PATH, MANIFEST_PATH,
-    ROBOTS_PATH, css, font, foundation_assets, image, javascript, text,
+    APPLE_TOUCH_ICON_PATH, ASSET_PREFIX, Asset, AssetKind, AssetLookup, AssetsCatalog,
+    AssetsCatalogError, CachePolicy, FAVICON_ICO_PATH, FAVICON_SVG_PATH, FONT_PREFIX,
+    MANIFEST_PATH, ROBOTS_PATH,
 };
 pub use components::Document;
 
-pub const GLOBAL_STYLESHEET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stylesheet.css"));
+mod generated_assets {
+    include!(concat!(env!("OUT_DIR"), "/assets.rs"));
+}
+
+pub const FOUNDATION: &[Asset] = generated_assets::FOUNDATION;
 
 #[cfg(test)]
 mod tests {

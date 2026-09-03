@@ -29,7 +29,7 @@ SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = [
-  "crates/ui/assets/fonts/*.woff2",
+  "crates/ui/src/assets/fonts/*.woff2",
 ]
 SPDX-FileCopyrightText = "Copyright 2017 IBM Corp. with Reserved Font Name Plex"
 SPDX-License-Identifier = "OFL-1.1"

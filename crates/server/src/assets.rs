@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nikolay Govorov
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Router,
@@ -11,124 +11,101 @@ use axum::{
     routing::get,
 };
 use dimidiumlabs_ui::{
-    APPLE_TOUCH_ICON_PATH, ASSET_PREFIX, Asset, CachePolicy, FAVICON_ICO_PATH, ROBOTS_PATH,
-    foundation_assets,
+    APPLE_TOUCH_ICON_PATH, ASSET_PREFIX, AssetLookup, AssetsCatalog, FAVICON_ICO_PATH, ROBOTS_PATH,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AssetCatalogError {
-    InvalidPath(&'static str),
-    DuplicatePath(&'static str),
+use crate::service::AssetsLayer;
+
+/// Builds the Axum serving adapter for one composed, transport-agnostic asset catalog.
+pub fn assets_router<S>(catalog: Arc<AssetsCatalog>) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new()
+        .route(FAVICON_ICO_PATH, get(serve_asset))
+        .route(ROBOTS_PATH, get(serve_asset))
+        .route(APPLE_TOUCH_ICON_PATH, get(serve_asset))
+        .route("/-/assets/{*path}", get(serve_asset))
+        .layer(AssetsLayer::new(Arc::clone(&catalog)))
+        .layer(Extension(catalog))
 }
 
-impl fmt::Display for AssetCatalogError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidPath(path) => write!(formatter, "invalid UI asset path {path:?}"),
-            Self::DuplicatePath(path) => write!(formatter, "duplicate UI asset path {path:?}"),
-        }
+pub(crate) fn lookup_uri(catalog: &AssetsCatalog, path: &str) -> Option<AssetLookup> {
+    let name = match path {
+        FAVICON_ICO_PATH => "favicon.ico",
+        ROBOTS_PATH => "robots.txt",
+        APPLE_TOUCH_ICON_PATH => "apple-touch-icon.png",
+        _ => path.strip_prefix(ASSET_PREFIX)?.strip_prefix('/')?,
+    };
+    let asset = catalog.lookup(name)?;
+    if asset.asset().name() != asset.asset().fingerprinted_name() && !asset.is_fingerprinted() {
+        return None;
     }
+    Some(asset)
 }
 
-impl std::error::Error for AssetCatalogError {}
-
-#[derive(Debug)]
-pub struct AssetCatalog {
-    assets: BTreeMap<&'static str, Asset>,
-}
-
-impl AssetCatalog {
-    /// Builds a catalog containing the shared foundation plus application assets.
-    ///
-    /// # Errors
-    /// Returns an error for duplicate paths or paths outside the canonical asset namespace and
-    /// explicitly supported root resources.
-    pub fn new(
-        application_assets: impl IntoIterator<Item = Asset>,
-    ) -> Result<Self, AssetCatalogError> {
-        let mut assets = BTreeMap::new();
-        for asset in foundation_assets().into_iter().chain(application_assets) {
-            let path = asset.path();
-            if !valid_path(path) {
-                return Err(AssetCatalogError::InvalidPath(path));
-            }
-            if assets.insert(path, asset).is_some() {
-                return Err(AssetCatalogError::DuplicatePath(path));
-            }
-        }
-        Ok(Self { assets })
-    }
-
-    #[must_use]
-    pub fn get(&self, path: &str) -> Option<&Asset> {
-        self.assets.get(path)
-    }
-
-    pub fn router<S>(self) -> Router<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
-        Router::new()
-            .route(FAVICON_ICO_PATH, get(serve_asset))
-            .route(ROBOTS_PATH, get(serve_asset))
-            .route(APPLE_TOUCH_ICON_PATH, get(serve_asset))
-            .route("/-/assets/{*path}", get(serve_asset))
-            .layer(Extension(Arc::new(self)))
-    }
-}
-
-fn valid_path(path: &str) -> bool {
-    path.strip_prefix(ASSET_PREFIX)
-        .is_some_and(|suffix| suffix.starts_with('/') && suffix.len() > 1)
-        || matches!(path, FAVICON_ICO_PATH | ROBOTS_PATH | APPLE_TOUCH_ICON_PATH)
-}
-
-async fn serve_asset(Extension(catalog): Extension<Arc<AssetCatalog>>, uri: Uri) -> Response<Body> {
-    let Some(asset) = catalog.get(uri.path()) else {
+async fn serve_asset(
+    Extension(catalog): Extension<Arc<AssetsCatalog>>,
+    uri: Uri,
+) -> Response<Body> {
+    let Some(asset) = lookup_uri(&catalog, uri.path()).map(AssetLookup::asset) else {
         return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
             .expect("empty not-found response is valid");
     };
 
-    let cache_control = match asset.cache_policy() {
-        CachePolicy::Revalidate => "no-cache",
-        CachePolicy::Immutable => "public, max-age=31536000, immutable",
-    };
-
+    let bytes = asset.bytes();
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, asset.content_type())
-        .header(header::CACHE_CONTROL, cache_control)
-        .body(Body::from(asset.bytes().to_vec()))
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes))
         .expect("registered UI asset response is valid")
 }
 
 #[cfg(test)]
 mod tests {
+    use dimidiumlabs_ui::{Asset, AssetKind};
+
     use super::*;
 
-    const APP: Asset = Asset::embedded(
-        "/-/assets/app.css",
-        "text/css",
-        b"body{}",
-        CachePolicy::Revalidate,
-    );
+    const INTEGRITY: &str =
+        "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS";
+    const ASSETS: &[Asset] = &[
+        Asset::new(
+            AssetKind::Stylesheet,
+            "app.css",
+            "app.0123456789abcdef.css",
+            dimidiumlabs_ui::CachePolicy::Immutable,
+            b"body{}",
+            INTEGRITY,
+        ),
+        Asset::new(
+            AssetKind::Static {
+                content_type: "image/x-icon",
+            },
+            "favicon.ico",
+            "favicon.ico",
+            dimidiumlabs_ui::CachePolicy::Revalidate,
+            b"icon",
+            INTEGRITY,
+        ),
+    ];
 
     #[test]
-    fn rejects_invalid_and_duplicate_paths() {
-        assert!(matches!(
-            AssetCatalog::new([Asset::embedded(
-                "/elsewhere.css",
-                "text/css",
-                b"",
-                CachePolicy::Revalidate,
-            )]),
-            Err(AssetCatalogError::InvalidPath("/elsewhere.css"))
-        ));
-        assert!(matches!(
-            AssetCatalog::new([APP.clone(), APP]),
-            Err(AssetCatalogError::DuplicatePath("/-/assets/app.css"))
-        ));
+    fn maps_original_fingerprinted_and_conventional_root_names() {
+        let catalog = AssetsCatalog::new().with(ASSETS).unwrap();
+        assert!(lookup_uri(&catalog, "/-/assets/app.css").is_none());
+        let fingerprinted = lookup_uri(&catalog, "/-/assets/app.0123456789abcdef.css").unwrap();
+        assert!(fingerprinted.is_fingerprinted());
+        assert_eq!(
+            lookup_uri(&catalog, FAVICON_ICO_PATH)
+                .unwrap()
+                .asset()
+                .name(),
+            "favicon.ico"
+        );
+        assert!(lookup_uri(&catalog, "/outside/app.css").is_none());
     }
 }

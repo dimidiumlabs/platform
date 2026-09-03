@@ -17,10 +17,30 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+arc-swap = "1"
 axum = "0.8"
-crc32fast = "1.5"
 dimidiumlabs-ui = { path = "../ui" }
-tower = { version = "0.5", features = ["util"] }
+governor = "0.10"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+ipnet = "2"
+pin-project-lite = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["sync", "time"] }
+tower = { version = "0.5", features = ["limit", "load-shed", "timeout", "util"] }
+tower-http = { version = "0.6", features = [
+  "compression-br",
+  "compression-gzip",
+  "decompression-br",
+  "decompression-gzip",
+  "follow-redirect",
+  "limit",
+  "timeout",
+] }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "test-util"] }
