@@ -43,7 +43,9 @@ pub enum CachePolicy {
 ///
 /// The original and canonical names, cache policy, bytes, and SHA-384 integrity value are emitted
 /// together by `dimidiumlabs-ui-build`. Compiled CSS/JavaScript use a distinct xxHash64-
-/// fingerprinted canonical name; copied source assets retain their logical name.
+/// fingerprinted canonical name; copied source assets retain their logical name. The integrity
+/// value belongs to the identity representation; encoded representations have distinct strong
+/// validators because their octets differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Asset {
     kind: AssetKind,
@@ -52,6 +54,15 @@ pub struct Asset {
     cache: CachePolicy,
     bytes: &'static [u8],
     integrity: &'static str,
+    gzip: Option<EncodedAsset>,
+    brotli: Option<EncodedAsset>,
+}
+
+/// One precompressed representation of an [`Asset`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncodedAsset {
+    bytes: &'static [u8],
+    etag: &'static str,
 }
 
 impl Asset {
@@ -77,7 +88,25 @@ impl Asset {
             cache,
             bytes,
             integrity,
+            gzip: None,
+            brotli: None,
         }
+    }
+
+    /// Adds a build-time gzip representation and its representation-specific strong validator.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_gzip(mut self, bytes: &'static [u8], etag: &'static str) -> Self {
+        self.gzip = Some(EncodedAsset { bytes, etag });
+        self
+    }
+
+    /// Adds a build-time Brotli representation and its representation-specific strong validator.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_brotli(mut self, bytes: &'static [u8], etag: &'static str) -> Self {
+        self.brotli = Some(EncodedAsset { bytes, etag });
+        self
     }
 
     #[must_use]
@@ -110,9 +139,40 @@ impl Asset {
         self.integrity
     }
 
+    /// Returns the build-time gzip representation, when retained by the size gate.
+    #[must_use]
+    pub const fn gzip(self) -> Option<EncodedAsset> {
+        self.gzip
+    }
+
+    /// Returns the build-time Brotli representation, when retained by the size gate.
+    #[must_use]
+    pub const fn brotli(self) -> Option<EncodedAsset> {
+        self.brotli
+    }
+
+    /// Returns whether this asset has any encoded representations.
+    #[must_use]
+    pub const fn has_encoded(self) -> bool {
+        self.gzip.is_some() || self.brotli.is_some()
+    }
+
     #[must_use]
     pub const fn content_type(self) -> &'static str {
         self.kind.content_type()
+    }
+}
+
+impl EncodedAsset {
+    #[must_use]
+    pub const fn bytes(self) -> &'static [u8] {
+        self.bytes
+    }
+
+    /// Returns the representation-specific strong `ETag` value, without HTTP quotes.
+    #[must_use]
+    pub const fn etag(self) -> &'static str {
+        self.etag
     }
 }
 
@@ -178,6 +238,21 @@ impl AssetsCatalog {
         }
         if !valid_sha384_integrity(asset.integrity()) {
             return Err(AssetsCatalogError::InvalidIntegrity(asset.name()));
+        }
+        let mut representation_etags = [Some(asset.integrity()), None, None];
+        for (index, representation) in [asset.gzip(), asset.brotli()].into_iter().enumerate() {
+            if let Some(representation) = representation {
+                if representation.bytes().is_empty()
+                    || !valid_sha384_integrity(representation.etag())
+                    || representation_etags[..=index]
+                        .iter()
+                        .flatten()
+                        .any(|etag| *etag == representation.etag())
+                {
+                    return Err(AssetsCatalogError::InvalidIntegrity(asset.name()));
+                }
+                representation_etags[index + 1] = Some(representation.etag());
+            }
         }
         if asset.name() != asset.fingerprinted_name()
             && !valid_fingerprinted_name(asset.name(), asset.fingerprinted_name())
@@ -332,6 +407,14 @@ mod tests {
             CachePolicy::Immutable,
             b"console.log('ok')",
             "sha384-us70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+        )
+        .with_gzip(
+            b"gzip",
+            "sha384-ts70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
+        )
+        .with_brotli(
+            b"brotli",
+            "sha384-vs70yumzLF2TpSodT8MxNxbLn5LCPNNUhaDDHTqXZZcBW+y9KnFu0zoe9CWl0mvS",
         );
         assert_eq!(ASSET.kind(), AssetKind::Script);
         assert_eq!(ASSET.name(), "app.js");
@@ -339,6 +422,9 @@ mod tests {
         assert_eq!(ASSET.cache(), CachePolicy::Immutable);
         assert!(ASSET.integrity().starts_with("sha384-"));
         assert_eq!(ASSET.bytes(), b"console.log('ok')");
+        assert_eq!(ASSET.gzip().unwrap().bytes(), b"gzip");
+        assert_eq!(ASSET.brotli().unwrap().bytes(), b"brotli");
+        assert!(ASSET.has_encoded());
     }
 
     #[test]

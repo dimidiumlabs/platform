@@ -8,7 +8,7 @@ pub mod components;
 
 pub use assets::{
     APPLE_TOUCH_ICON_PATH, ASSET_PREFIX, Asset, AssetKind, AssetLookup, AssetsCatalog,
-    AssetsCatalogError, CachePolicy, FAVICON_ICO_PATH, FAVICON_SVG_PATH, FONT_PREFIX,
+    AssetsCatalogError, CachePolicy, EncodedAsset, FAVICON_ICO_PATH, FAVICON_SVG_PATH, FONT_PREFIX,
     MANIFEST_PATH, ROBOTS_PATH,
 };
 pub use components::Document;

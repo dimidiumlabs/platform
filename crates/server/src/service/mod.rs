@@ -39,7 +39,7 @@ pub mod timeout {
 /// supplies both the encoded and decoded size budgets.
 pub mod compression {
     pub use tower_http::{
-        compression::{Compression, CompressionLayer, Predicate},
+        compression::{Compression, CompressionLayer, CompressionLevel, Predicate},
         decompression::{RequestDecompression, RequestDecompressionLayer},
     };
 }

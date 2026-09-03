@@ -429,6 +429,8 @@ name = "dimidiumlabs-ui-build"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "brotli",
+ "flate2",
  "lightningcss",
  "oxc",
  "sha2",

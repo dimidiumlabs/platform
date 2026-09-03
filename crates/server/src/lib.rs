@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod assets;
+mod body;
+mod html_compression;
 pub mod service;
 pub mod tls;
 pub mod transport;
 
-pub use assets::assets_router;
+pub use assets::{asset_router_at, assets_router};
+pub use html_compression::HtmlCompressionPredicate;
 
 #[cfg(test)]
 mod tests {

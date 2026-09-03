@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    collections::BTreeMap,
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -18,18 +19,28 @@ use tower::{Layer, Service};
 use crate::assets::lookup_uri;
 
 use super::html::if_none_match_matches;
+use crate::body::empty_unknown_size;
 
 /// Applies build-generated strong validators, cache policy, and asset-specific security headers
 /// without buffering response bodies.
 #[derive(Debug, Clone)]
 pub struct AssetsLayer {
     catalog: Arc<AssetsCatalog>,
+    aliases: Arc<BTreeMap<String, String>>,
 }
 
 impl AssetsLayer {
     #[must_use]
     pub fn new(catalog: Arc<AssetsCatalog>) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            aliases: Arc::new(BTreeMap::new()),
+        }
+    }
+
+    pub(crate) fn with_alias(mut self, path: &str, name: &str) -> Self {
+        Arc::make_mut(&mut self.aliases).insert(path.to_owned(), name.to_owned());
+        self
     }
 }
 
@@ -40,6 +51,7 @@ impl<S> Layer<S> for AssetsLayer {
         AssetsService {
             inner,
             catalog: Arc::clone(&self.catalog),
+            aliases: Arc::clone(&self.aliases),
         }
     }
 }
@@ -49,6 +61,7 @@ impl<S> Layer<S> for AssetsLayer {
 pub struct AssetsService<S> {
     inner: S,
     catalog: Arc<AssetsCatalog>,
+    aliases: Arc<BTreeMap<String, String>>,
 }
 
 impl<S> Service<Request<Body>> for AssetsService<S>
@@ -68,7 +81,11 @@ where
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         let method = request.method().clone();
         let if_none_match = request.headers().get(header::IF_NONE_MATCH).cloned();
-        let asset = lookup_uri(&self.catalog, request.uri().path());
+        let asset = lookup_uri(&self.catalog, request.uri().path()).or_else(|| {
+            self.aliases
+                .get(request.uri().path())
+                .and_then(|name| self.catalog.lookup(name))
+        });
         let replacement = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, replacement);
 
@@ -98,7 +115,14 @@ where
                     CachePolicy::Revalidate => HeaderValue::from_static("no-cache"),
                 };
                 parts.headers.insert(header::CACHE_CONTROL, cache_control);
-                let etag = format!("\"{}\"", asset.asset().integrity());
+                let etag = parts
+                    .headers
+                    .get(header::ETAG)
+                    .and_then(|value| value.to_str().ok())
+                    .map_or_else(
+                        || format!("\"{}\"", asset.asset().integrity()),
+                        str::to_owned,
+                    );
                 parts.headers.insert(
                     header::ETAG,
                     HeaderValue::from_str(&etag)
@@ -112,7 +136,7 @@ where
                 {
                     parts.status = StatusCode::NOT_MODIFIED;
                     parts.headers.remove(header::CONTENT_LENGTH);
-                    return Ok(Response::from_parts(parts, Body::empty()));
+                    return Ok(Response::from_parts(parts, empty_unknown_size()));
                 }
                 if method == axum::http::Method::HEAD {
                     return Ok(Response::from_parts(parts, Body::empty()));

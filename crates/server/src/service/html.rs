@@ -16,11 +16,14 @@ use dimidiumlabs_ui::{Asset, AssetsCatalog};
 use sha2::{Digest as _, Sha256};
 use tower::{Layer, Service};
 
+use crate::body::empty_unknown_size;
+
 /// Applies HTML-specific security, cache, and validator policy.
 #[derive(Debug, Clone)]
 pub struct HtmlLayer {
     max_body_bytes: usize,
     content_security_policy: HeaderValue,
+    negotiated_compression: bool,
 }
 
 impl HtmlLayer {
@@ -31,6 +34,7 @@ impl HtmlLayer {
                 catalog.scripts().map(Asset::integrity),
             ),
             max_body_bytes: DEFAULT_MAX_HTML_BODY_BYTES,
+            negotiated_compression: false,
         }
     }
 
@@ -38,6 +42,17 @@ impl HtmlLayer {
     #[must_use]
     pub const fn with_max_body_bytes(mut self, max_body_bytes: usize) -> Self {
         self.max_body_bytes = max_body_bytes;
+        self
+    }
+
+    /// Marks HTML validators weak and varies caches by `Accept-Encoding`.
+    ///
+    /// Enable this when an outer streaming compression layer can select an encoded
+    /// representation. This method changes only validator/cache metadata; it does not compress or
+    /// buffer the response.
+    #[must_use]
+    pub const fn with_negotiated_compression(mut self) -> Self {
+        self.negotiated_compression = true;
         self
     }
 }
@@ -50,6 +65,7 @@ impl<S> Layer<S> for HtmlLayer {
             inner,
             max_body_bytes: self.max_body_bytes,
             content_security_policy: self.content_security_policy.clone(),
+            negotiated_compression: self.negotiated_compression,
         }
     }
 }
@@ -60,6 +76,7 @@ pub struct HtmlService<S> {
     inner: S,
     max_body_bytes: usize,
     content_security_policy: HeaderValue,
+    negotiated_compression: bool,
 }
 
 impl<S> Service<Request<Body>> for HtmlService<S>
@@ -79,6 +96,7 @@ where
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         let max_body_bytes = self.max_body_bytes;
         let content_security_policy = self.content_security_policy.clone();
+        let negotiated_compression = self.negotiated_compression;
 
         let method = request.method().clone();
         let if_none_match = request.headers().get(header::IF_NONE_MATCH).cloned();
@@ -94,6 +112,7 @@ where
                 response,
                 &content_security_policy,
                 max_body_bytes,
+                negotiated_compression,
             )
             .await)
         })
@@ -176,26 +195,34 @@ async fn harden_html_response(
     response: Response<Body>,
     content_security_policy: &HeaderValue,
     max_body_bytes: usize,
+    negotiated_compression: bool,
 ) -> Response<Body> {
     if !is_html_response(&response) {
         return response;
     }
     let status = response.status();
     let (mut parts, body) = response.into_parts();
-    apply_html_headers(&mut parts.headers, content_security_policy);
+    apply_html_headers(
+        &mut parts.headers,
+        content_security_policy,
+        negotiated_compression,
+    );
+    if negotiated_compression {
+        weaken_etag(&mut parts.headers);
+    }
     if status != StatusCode::OK || !matches!(method, Method::GET | Method::HEAD) {
         return Response::from_parts(parts, body);
     }
 
     if let Some(etag_header) = parts.headers.get(header::ETAG).cloned() {
-        if etag_header.to_str().ok().is_some_and(|etag| {
+        if etag_header.to_str().is_ok_and(|etag| {
             if_none_match
                 .as_ref()
                 .is_some_and(|value| if_none_match_matches(value, etag))
         }) {
             parts.status = StatusCode::NOT_MODIFIED;
             parts.headers.remove(header::CONTENT_LENGTH);
-            return Response::from_parts(parts, Body::empty());
+            return Response::from_parts(parts, empty_unknown_size());
         }
         let body = if method == Method::HEAD {
             Body::empty()
@@ -219,7 +246,11 @@ async fn harden_html_response(
         }
     };
 
-    let etag = strong_etag(&bytes);
+    let etag = if negotiated_compression {
+        format!("W/{}", strong_etag(&bytes))
+    } else {
+        strong_etag(&bytes)
+    };
     let etag_header = HeaderValue::from_str(&etag).expect("SHA-256 entity tag is valid ASCII");
     if if_none_match
         .as_ref()
@@ -228,7 +259,7 @@ async fn harden_html_response(
         parts.status = StatusCode::NOT_MODIFIED;
         parts.headers.insert(header::ETAG, etag_header);
         parts.headers.remove(header::CONTENT_LENGTH);
-        return Response::from_parts(parts, Body::empty());
+        return Response::from_parts(parts, empty_unknown_size());
     }
 
     parts.headers.insert(header::ETAG, etag_header);
@@ -244,7 +275,24 @@ async fn harden_html_response(
     Response::from_parts(parts, body)
 }
 
-fn apply_html_headers(headers: &mut axum::http::HeaderMap, content_security_policy: &HeaderValue) {
+fn apply_html_headers(
+    headers: &mut axum::http::HeaderMap,
+    content_security_policy: &HeaderValue,
+    negotiated_compression: bool,
+) {
+    if negotiated_compression
+        && !headers
+            .get_all(header::VARY)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|name| {
+                let name = name.trim();
+                name == "*" || name.eq_ignore_ascii_case(header::ACCEPT_ENCODING.as_str())
+            })
+    {
+        headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    }
     headers
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("private, no-cache"));
@@ -271,6 +319,23 @@ fn apply_html_headers(headers: &mut axum::http::HeaderMap, content_security_poli
     headers.insert(
         PERMISSIONS_POLICY_HEADER,
         HeaderValue::from_static(POLICY_PERMISSIONS),
+    );
+}
+
+fn weaken_etag(headers: &mut axum::http::HeaderMap) {
+    let Some(etag) = headers.get(header::ETAG) else {
+        return;
+    };
+    let bytes = etag.as_bytes();
+    if bytes.starts_with(b"W/\"") || !bytes.starts_with(b"\"") || !bytes.ends_with(b"\"") {
+        return;
+    }
+    let mut weak = Vec::with_capacity(bytes.len() + 2);
+    weak.extend_from_slice(b"W/");
+    weak.extend_from_slice(bytes);
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_bytes(&weak).expect("valid strong ETag remains valid when weakened"),
     );
 }
 
@@ -312,6 +377,43 @@ pub(crate) fn if_none_match_matches(header: &HeaderValue, etag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn negotiated_compression_uses_weak_etags_and_varies_304() {
+        let body = b"dynamic html";
+        let expected = format!("W/{}", strong_etag(body));
+        let response = harden_html_response(
+            Method::GET,
+            None,
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(Body::from(body.as_slice()))
+                .unwrap(),
+            &HeaderValue::from_static("default-src 'none'"),
+            DEFAULT_MAX_HTML_BODY_BYTES,
+            true,
+        )
+        .await;
+        assert_eq!(response.headers()[header::ETAG], expected);
+        assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+
+        let response = harden_html_response(
+            Method::GET,
+            Some(HeaderValue::from_str(expected.trim_start_matches("W/")).unwrap()),
+            Response::builder()
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(Body::from(body.as_slice()))
+                .unwrap(),
+            &HeaderValue::from_static("default-src 'none'"),
+            DEFAULT_MAX_HTML_BODY_BYTES,
+            true,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers()[header::ETAG], expected);
+        assert_eq!(response.headers()[header::VARY], "Accept-Encoding");
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+    }
 
     #[test]
     fn if_none_match_uses_weak_comparison() {

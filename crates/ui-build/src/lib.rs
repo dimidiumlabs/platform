@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nikolay Govorov
 // SPDX-License-Identifier: Apache-2.0
 
+mod compression;
 mod css;
 mod script;
 
@@ -23,7 +24,10 @@ use xxhash_rust::xxh64::xxh64;
 /// both the generated array identifier and the logical base name for compiled CSS/JavaScript.
 ///
 /// CSS/JavaScript receive a complete xxHash64 filename fingerprint; every asset receives SHA-384
-/// integrity. One `assets.rs` contains the complete ordered array.
+/// integrity. Compressible assets of at least 256 bytes also receive build-time gzip and Brotli
+/// representations when a candidate saves at least 64 bytes and 10% over its more widely
+/// supported fallback (identity for gzip, retained gzip for Brotli). One `assets.rs` contains the
+/// complete ordered array.
 ///
 /// # Errors
 /// Returns an error when the ID or a path is invalid, Cargo has not supplied its build-script
@@ -32,6 +36,134 @@ pub fn build(id: &str, source_paths: &[&str], asset_paths: &[&str]) -> Result<()
     let manifest_dir = env_path("CARGO_MANIFEST_DIR")?;
     let out_dir = env_path("OUT_DIR")?;
     compile(&manifest_dir, &out_dir, id, source_paths, asset_paths).map(|_| ())
+}
+
+/// Cache policy emitted for a generated build output registered as an asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratedAssetCachePolicy {
+    Revalidate,
+    Immutable,
+}
+
+/// Registers one file already generated below the calling package's `OUT_DIR` as an asset set.
+///
+/// This is intended for deterministic build outputs such as a generated license report. It emits
+/// `<id>_assets.rs`, preserves the identity file, and applies the same gzip/Brotli size gate as
+/// [`build`]. Unlike `build` inputs, `source_path` is relative to `OUT_DIR`; absolute paths,
+/// non-normal components, directories, and symbolic links are rejected.
+///
+/// # Errors
+/// Returns an error when the ID, name, content type, or source path is invalid, Cargo has not
+/// supplied `OUT_DIR`, or the generated file cannot be read or compressed.
+pub fn build_generated_asset(
+    id: &str,
+    name: &str,
+    content_type: &str,
+    cache: GeneratedAssetCachePolicy,
+    source_path: &str,
+) -> Result<(), Error> {
+    let out_dir = env_path("OUT_DIR")?;
+    compile_generated_asset(&out_dir, id, name, content_type, cache, source_path)
+}
+
+fn compile_generated_asset(
+    out_dir: &Path,
+    id: &str,
+    name: &str,
+    content_type: &str,
+    cache: GeneratedAssetCachePolicy,
+    source_path: &str,
+) -> Result<(), Error> {
+    let id = BuildId::new(id)?;
+    if !valid_asset_name(name)
+        || !valid_content_type(content_type)
+        || !valid_normal_relative_path(source_path)
+    {
+        return Err(Error::InvalidGeneratedAsset(name.to_owned()));
+    }
+
+    let source = resolve_generated_path(out_dir, source_path)?;
+    let metadata = fs::symlink_metadata(&source).map_err(|source_error| Error::Io {
+        path: source.clone(),
+        source: source_error,
+    })?;
+    reject_symbolic_link(&source, metadata.file_type())?;
+    if !metadata.is_file() {
+        return Err(Error::InvalidGeneratedAsset(name.to_owned()));
+    }
+    let bytes = fs::read(&source).map_err(|source_error| Error::Io {
+        path: source.clone(),
+        source: source_error,
+    })?;
+
+    let mut binding = format!(
+        "pub const {}: &[dimidiumlabs_ui::Asset] = &[\n",
+        id.constant
+    );
+    push_asset_binding(
+        out_dir,
+        &mut binding,
+        &mut BTreeSet::new(),
+        BindingAsset {
+            kind: format!(
+                "dimidiumlabs_ui::AssetKind::Static {{ content_type: {content_type:?} }}"
+            ),
+            name: name.to_owned(),
+            include_path: format!("/{source_path}"),
+            bytes: &bytes,
+            fingerprint: false,
+            cache: match cache {
+                GeneratedAssetCachePolicy::Revalidate => "dimidiumlabs_ui::CachePolicy::Revalidate",
+                GeneratedAssetCachePolicy::Immutable => "dimidiumlabs_ui::CachePolicy::Immutable",
+            },
+            compressible: compressible_content_type(content_type),
+        },
+    )?;
+    binding.push_str("];\n");
+    write_output(
+        &out_dir.join(format!("{}_assets.rs", id.basename)),
+        &binding,
+    )
+}
+
+fn resolve_generated_path(out_dir: &Path, source_path: &str) -> Result<PathBuf, Error> {
+    let mut resolved = out_dir.to_owned();
+    for component in Path::new(source_path).components() {
+        let Component::Normal(component) = component else {
+            return Err(Error::InvalidBuildPath(source_path.to_owned()));
+        };
+        resolved.push(component);
+        let metadata = fs::symlink_metadata(&resolved).map_err(|source| Error::Io {
+            path: resolved.clone(),
+            source,
+        })?;
+        reject_symbolic_link(&resolved, metadata.file_type())?;
+    }
+    Ok(resolved)
+}
+
+fn valid_normal_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn valid_asset_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.'))
+        && name
+            .split('/')
+            .all(|component| !component.is_empty() && !matches!(component, "." | ".."))
+}
+
+fn valid_content_type(content_type: &str) -> bool {
+    !content_type.is_empty()
+        && content_type.is_ascii()
+        && !content_type.bytes().any(|byte| byte.is_ascii_control())
 }
 
 /// The results produced by [`compile`]. This is mainly useful for build-tool integration tests.
@@ -102,6 +234,13 @@ pub fn compile(
         path: out_dir.to_owned(),
         source,
     })?;
+    let compressed_dir = out_dir.join("compressed");
+    if compressed_dir.exists() {
+        fs::remove_dir_all(&compressed_dir).map_err(|source| Error::Io {
+            path: compressed_dir.clone(),
+            source,
+        })?;
+    }
     write_output(&out_dir.join("stylesheet.css"), &stylesheet)?;
     write_output(
         &out_dir.join("css_modules.rs"),
@@ -111,7 +250,7 @@ pub fn compile(
     copy_static_assets(out_dir, &static_assets)?;
     write_output(
         &out_dir.join("assets.rs"),
-        &assets_binding(&id, &stylesheet, &script, &static_assets)?,
+        &assets_binding(out_dir, &id, &stylesheet, &script, &static_assets)?,
     )?;
 
     let mut rerun_if_changed = source_paths
@@ -170,6 +309,7 @@ pub enum Error {
         paths: Vec<String>,
     },
     DuplicateAssetName(String),
+    InvalidGeneratedAsset(String),
     CrossFileComposes {
         path: String,
     },
@@ -207,6 +347,9 @@ impl fmt::Display for Error {
                 paths.join(", ")
             ),
             Self::DuplicateAssetName(name) => write!(f, "duplicate generated asset name {name:?}"),
+            Self::InvalidGeneratedAsset(name) => {
+                write!(f, "invalid generated asset metadata for {name:?}")
+            }
             Self::CrossFileComposes { path } => {
                 write!(f, "{path}: composing from another file is unsupported")
             }
@@ -509,6 +652,7 @@ fn layered_stylesheet(global_styles: &str, component_styles: &str) -> String {
 }
 
 fn assets_binding(
+    out_dir: &Path,
     id: &BuildId,
     stylesheet: &str,
     script: &str,
@@ -520,6 +664,7 @@ fn assets_binding(
     );
     let mut names = BTreeSet::new();
     push_asset_binding(
+        out_dir,
         &mut binding,
         &mut names,
         BindingAsset {
@@ -529,10 +674,12 @@ fn assets_binding(
             bytes: stylesheet.as_bytes(),
             fingerprint: true,
             cache: "dimidiumlabs_ui::CachePolicy::Immutable",
+            compressible: true,
         },
     )?;
     if !script.is_empty() {
         push_asset_binding(
+            out_dir,
             &mut binding,
             &mut names,
             BindingAsset {
@@ -542,6 +689,7 @@ fn assets_binding(
                 bytes: script.as_bytes(),
                 fingerprint: true,
                 cache: "dimidiumlabs_ui::CachePolicy::Immutable",
+                compressible: true,
             },
         )?;
     }
@@ -550,19 +698,21 @@ fn assets_binding(
             path: asset.path.clone(),
             source,
         })?;
+        let content_type = static_content_type(&asset.relative_path);
         push_asset_binding(
+            out_dir,
             &mut binding,
             &mut names,
             BindingAsset {
                 kind: format!(
-                    "dimidiumlabs_ui::AssetKind::Static {{ content_type: {:?} }}",
-                    static_content_type(&asset.relative_path)
+                    "dimidiumlabs_ui::AssetKind::Static {{ content_type: {content_type:?} }}"
                 ),
                 name: asset.relative_path.clone(),
                 include_path: format!("/assets/{}", asset.relative_path),
                 bytes: &bytes,
                 fingerprint: false,
                 cache: static_cache_policy(&asset.relative_path),
+                compressible: compressible_content_type(content_type),
             },
         )?;
     }
@@ -577,9 +727,11 @@ struct BindingAsset<'a> {
     bytes: &'a [u8],
     fingerprint: bool,
     cache: &'static str,
+    compressible: bool,
 }
 
 fn push_asset_binding(
+    out_dir: &Path,
     binding: &mut String,
     names: &mut BTreeSet<String>,
     asset: BindingAsset<'_>,
@@ -595,7 +747,18 @@ fn push_asset_binding(
     if fingerprinted_name != asset.name && !names.insert(fingerprinted_name.clone()) {
         return Err(Error::DuplicateAssetName(fingerprinted_name));
     }
-    let integrity = integrity(asset.bytes);
+    let identity_integrity = integrity(asset.bytes);
+    let variants = if asset.compressible {
+        compression::compress(asset.bytes).map_err(|source| Error::Io {
+            path: PathBuf::from(&asset.name),
+            source,
+        })?
+    } else {
+        compression::Variants {
+            gzip: None,
+            brotli: None,
+        }
+    };
     let BindingAsset {
         kind,
         name,
@@ -605,10 +768,62 @@ fn push_asset_binding(
     } = asset;
     write!(
         binding,
-        "    dimidiumlabs_ui::Asset::new(\n        {kind},\n        {name:?},\n        {fingerprinted_name:?},\n        {cache},\n        include_bytes!(concat!(env!(\"OUT_DIR\"), {include_path:?})),\n        {integrity:?},\n    ),\n"
+        "    dimidiumlabs_ui::Asset::new(\n        {kind},\n        {name:?},\n        {fingerprinted_name:?},\n        {cache},\n        include_bytes!(concat!(env!(\"OUT_DIR\"), {include_path:?})),\n        {identity_integrity:?},\n    )"
     )
     .expect("writing to String cannot fail");
+    if let Some(bytes) = variants.gzip {
+        let path = write_compressed(out_dir, &include_path, "gz", &bytes)?;
+        let etag = integrity(&bytes);
+        write!(
+            binding,
+            ".with_gzip(include_bytes!(concat!(env!(\"OUT_DIR\"), {path:?})), {etag:?})"
+        )
+        .expect("writing to String cannot fail");
+    }
+    if let Some(bytes) = variants.brotli {
+        let path = write_compressed(out_dir, &include_path, "br", &bytes)?;
+        let etag = integrity(&bytes);
+        write!(
+            binding,
+            ".with_brotli(include_bytes!(concat!(env!(\"OUT_DIR\"), {path:?})), {etag:?})"
+        )
+        .expect("writing to String cannot fail");
+    }
+    binding.push_str(",\n");
     Ok(())
+}
+
+fn write_compressed(
+    out_dir: &Path,
+    include_path: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> Result<String, Error> {
+    let relative = format!(
+        "compressed/{}.{extension}",
+        include_path.trim_start_matches('/')
+    );
+    let destination = out_dir.join(&relative);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::Io {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    fs::write(&destination, bytes).map_err(|source| Error::Io {
+        path: destination,
+        source,
+    })?;
+    Ok(format!("/{relative}"))
+}
+
+fn compressible_content_type(content_type: &str) -> bool {
+    content_type.starts_with("text/")
+        || content_type.starts_with("application/json")
+        || content_type.starts_with("application/manifest+json")
+        || content_type.starts_with("application/javascript")
+        || content_type.starts_with("application/xml")
+        || content_type.starts_with("image/svg+xml")
 }
 
 fn fingerprinted_name(name: &str, fingerprint: u64) -> String {
@@ -772,6 +987,105 @@ mod tests {
             "@layer global,components;@layer global{@font-face{font-family:test;src:url(test.woff2)}p{margin:1rem}}@layer components{.card{margin:0}}",
         );
         assert!(css::compile_global(&stylesheet, "generated.css").is_ok());
+    }
+
+    #[test]
+    fn registers_generated_out_dir_files_with_the_same_compression_policy() {
+        let output = tempdir().unwrap();
+        let json = format!("[{}]", "\"generated license text\",".repeat(10_000));
+        fs::write(output.path().join("licenses.json"), &json).unwrap();
+
+        compile_generated_asset(
+            output.path(),
+            "LICENSES",
+            "licenses.json",
+            "application/json; charset=utf-8",
+            GeneratedAssetCachePolicy::Revalidate,
+            "licenses.json",
+        )
+        .unwrap();
+
+        let bindings = fs::read_to_string(output.path().join("licenses_assets.rs")).unwrap();
+        assert!(bindings.starts_with("pub const LICENSES: &[dimidiumlabs_ui::Asset]"));
+        assert!(bindings.contains("/licenses.json"));
+        assert!(bindings.contains("/compressed/licenses.json.gz"));
+        assert!(bindings.contains("/compressed/licenses.json.br"));
+        assert!(output.path().join("compressed/licenses.json.gz").is_file());
+        assert!(output.path().join("compressed/licenses.json.br").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_generated_out_dir_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let output = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("licenses.json"), "[]").unwrap();
+        symlink(
+            outside.path().join("licenses.json"),
+            output.path().join("licenses.json"),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            compile_generated_asset(
+                output.path(),
+                "LICENSES",
+                "licenses.json",
+                "application/json",
+                GeneratedAssetCachePolicy::Revalidate,
+                "licenses.json",
+            ),
+            Err(Error::SymbolicLink { .. })
+        ));
+    }
+
+    #[test]
+    fn emits_only_material_precompressed_text_representations() {
+        let project = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        fs::create_dir_all(project.path().join("src/assets")).unwrap();
+        let json = format!(
+            "[{}]",
+            "\"abcdefghijklmnopqrstuvwxyz0123456789\",".repeat(10_000)
+        );
+        fs::write(project.path().join("src/assets/data.json"), &json).unwrap();
+        fs::write(project.path().join("src/assets/image.png"), vec![0; 20_000]).unwrap();
+
+        compile(
+            project.path(),
+            output.path(),
+            "APPLICATION",
+            &[],
+            &["src/assets"],
+        )
+        .unwrap();
+
+        let bindings = fs::read_to_string(output.path().join("assets.rs")).unwrap();
+        assert!(bindings.contains(".with_gzip("));
+        assert!(bindings.contains(".with_brotli("));
+        assert!(bindings.contains("/compressed/assets/data.json.gz"));
+        assert!(bindings.contains("/compressed/assets/data.json.br"));
+        assert!(!bindings.contains("/compressed/assets/image.png"));
+        assert!(
+            output
+                .path()
+                .join("compressed/assets/data.json.gz")
+                .is_file()
+        );
+        assert!(
+            output
+                .path()
+                .join("compressed/assets/data.json.br")
+                .is_file()
+        );
+        assert!(
+            !output
+                .path()
+                .join("compressed/assets/image.png.gz")
+                .exists()
+        );
     }
 
     #[test]

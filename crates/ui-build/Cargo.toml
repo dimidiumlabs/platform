@@ -18,6 +18,8 @@ workspace = true
 
 [dependencies]
 base64 = "0.22"
+brotli = "8"
+flate2 = "1"
 lightningcss = { version = "=1.0.0-alpha.72", default-features = false }
 oxc = { version = "=0.148.0", default-features = false, features = ["codegen", "mangler", "minifier", "semantic", "transformer"] }
 sha2 = "0.10"
