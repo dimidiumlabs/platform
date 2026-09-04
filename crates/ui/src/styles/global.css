@@ -46,6 +46,8 @@
 }
 
 :root {
+  --font-family-roman: 'IBM Plex Sans', 'IBM Plex Math', sans-serif;
+  --font-family-mono: 'IBM Plex Mono', 'IBM Plex Math', monospace;
   --readable-line-width: 32em;
   --list-item-spacing: 0.875rem;
 }
@@ -59,7 +61,7 @@
 html {
   margin: 0;
   padding: 0;
-  font-family: 'IBM Plex Sans', 'IBM Plex Math', sans-serif;
+  font-family: var(--font-family-roman);
   font-size: 1rem;
   line-height: 1.4;
 }
@@ -81,7 +83,7 @@ code,
 kbd,
 pre,
 samp {
-  font-family: 'IBM Plex Mono', 'IBM Plex Math', monospace;
+  font-family: var(--font-family-mono);
 }
 
 math {

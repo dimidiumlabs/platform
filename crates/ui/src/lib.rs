@@ -26,6 +26,10 @@ mod tests {
         let styles = include_str!("styles/global.css");
 
         for declaration in [
+            "--font-family-roman: 'IBM Plex Sans', 'IBM Plex Math', sans-serif",
+            "--font-family-mono: 'IBM Plex Mono', 'IBM Plex Math', monospace",
+            "font-family: var(--font-family-roman)",
+            "font-family: var(--font-family-mono)",
             "--readable-line-width: 32em",
             "font-size: 1.125rem",
             "line-height: 1.4",
